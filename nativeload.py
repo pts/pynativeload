@@ -12,55 +12,50 @@ def addmul(a, b, c, d, e, f, g, h, i):
   return (r & 0x7fffffff) - (r & 0x80000000)  # Sign-extend.
 
 # Size divisible by 16, good for alignment.
-# !! Support 10 arguments.
 # i386 (32-bit) only code, `import dl' doesn't support 64-bit.
 _compar_code = (
-    # compar:  # TODO(pts): Make it smaller.
-    # int compar(struct args *a, struct args *b) {
-    #   if (b->v & 1) a = b;
-    #   if (a->v & 1) {
-    #     a->v &= 6;  /* Don't trigger again. */
-    #     a->a = a->p(a->a, a->b, a->c, a->d, a->e, a->f, a->g, a->h, a->i);
-    #   }
-    #   return 0;
-    # }
-    # !! Reuse a->p as null pointer, make it smaller.
-    '53'         # push   %ebx
-    '83ec38'     # sub    $0x38,%esp
-    '8b5c2440'   # mov    0x40(%esp),%ebx
-    '8b442444'   # mov    0x44(%esp),%eax
-    'f60001'     # testb  $0x1,(%eax)
-    '7402'       # je     d1 <compar+0x13>
-    '89c3'       # mov    %eax,%ebx
-    '8b03'       # mov    (%ebx),%eax
-    'a801'       # test   $0x1,%al
-    '7449'       # je     120 <compar+0x62>
-    '83e006'     # and    $0x6,%eax
-    '8903'       # mov    %eax,(%ebx)
-    '8b4324'     # mov    0x24(%ebx),%eax
-    '89442420'   # mov    %eax,0x20(%esp)
-    '8b4320'     # mov    0x20(%ebx),%eax
-    '8944241c'   # mov    %eax,0x1c(%esp)
-    '8b431c'     # mov    0x1c(%ebx),%eax
-    '89442418'   # mov    %eax,0x18(%esp)
-    '8b4318'     # mov    0x18(%ebx),%eax
-    '89442414'   # mov    %eax,0x14(%esp)
-    '8b4314'     # mov    0x14(%ebx),%eax
-    '89442410'   # mov    %eax,0x10(%esp)
-    '8b4310'     # mov    0x10(%ebx),%eax
-    '8944240c'   # mov    %eax,0xc(%esp)
-    '8b430c'     # mov    0xc(%ebx),%eax
-    '89442408'   # mov    %eax,0x8(%esp)
-    '8b4308'     # mov    0x8(%ebx),%eax
-    '89442404'   # mov    %eax,0x4(%esp)
-    '8b4304'     # mov    0x4(%ebx),%eax
-    '890424'     # mov    %eax,(%esp)
-    'ff5328'     # call   *0x28(%ebx)
-    '894304'     # mov    %eax,0x4(%ebx)
-    '31c0'       # xor    %eax,%eax
-    '83c438'     # add    $0x38,%esp
-    '5b'         # pop    %ebx
-    'c3'         # ret    
+    # compar:  # !! TODO(pts): Make it smaller.
+    # !! Copy C code here.
+    '56'          # push   %esi
+    '53'          # push   %ebx
+    '83ec28'      # sub    $0x28,%esp
+    '8b5c2434'    # mov    0x34(%esp),%ebx
+    '83ceff'      # or     $0xffffffff,%esi
+    '833bff'      # cmpl   $0xffffffff,(%ebx)
+    '7509'        # jne    20 <compar+0x1a>
+    '8b5c2438'    # mov    0x38(%esp),%ebx
+    'be01000000'  # mov    $0x1,%esi
+    '8b03'        # mov    (%ebx),%eax
+    '85c0'        # test   %eax,%eax
+    '744a'        # je     70 <compar+0x6a>
+    '8b5328'      # mov    0x28(%ebx),%edx
+    '89542424'    # mov    %edx,0x24(%esp)
+    '8b5324'      # mov    0x24(%ebx),%edx
+    '89542420'    # mov    %edx,0x20(%esp)
+    '8b5320'      # mov    0x20(%ebx),%edx
+    '8954241c'    # mov    %edx,0x1c(%esp)
+    '8b531c'      # mov    0x1c(%ebx),%edx
+    '89542418'    # mov    %edx,0x18(%esp)
+    '8b5318'      # mov    0x18(%ebx),%edx
+    '89542414'    # mov    %edx,0x14(%esp)
+    '8b5314'      # mov    0x14(%ebx),%edx
+    '89542410'    # mov    %edx,0x10(%esp)
+    '8b5310'      # mov    0x10(%ebx),%edx
+    '8954240c'    # mov    %edx,0xc(%esp)
+    '8b530c'      # mov    0xc(%ebx),%edx
+    '89542408'    # mov    %edx,0x8(%esp)
+    '8b5308'      # mov    0x8(%ebx),%edx
+    '89542404'    # mov    %edx,0x4(%esp)
+    '8b5304'      # mov    0x4(%ebx),%edx
+    '891424'      # mov    %edx,(%esp)
+    'ffd0'        # call   *%eax
+    '894304'      # mov    %eax,0x4(%ebx)
+    'c70300000000'  # movl   $0x0,(%ebx)
+    '89f0'        # mov    %esi,%eax
+    '83c428'      # add    $0x28,%esp
+    '5b'          # pop    %ebx
+    '5e'          # pop    %esi
+    'c3'          # ret    
 ).decode('hex')
 assert not len(_compar_code) % 15
 
@@ -107,6 +102,7 @@ class CallerDl(object):
       # d.call, but the one in StaticPython does support it, and we can use it
       # for speedup.
       d.call(d.sym('memcpy'))  # 0 is the default for the remaining args.
+      raise TypeError('!!')
       compar_ofs = -1
     except TypeError:
       if not d.sym('qsort'):
@@ -142,16 +138,18 @@ class CallerDl(object):
   
     # !! Populate methods directly instead.
     if self.vp_compar:  # Slow but compatible version with qsort.
-      if len(args) > 9:
+      if len(args) > 10:  # d_call has a limit of 10 anyway.
         raise ValueError('At most 9 arguments accepted.')
       d_call = self.d_call
-      a = [0] * 22
+      a = [0] * 13
       for i, arg in enumerate(args):
         if isinstance(arg, str):
           arg = d_call('memcpy', arg)  # Convert data pointer to integer.
-        a[i + 1] = arg
-      a[0], a[10], a[11] = 3, self.vp_addr_map[func_name], 4
-      qsort_data = struct.pack('=22l', *a)
+        a[i + 2] = arg
+      a[0], a[1], a[12] = '=12l40x', self.vp_addr_map[func_name], -1
+      qsort_data = struct.pack(*a)
+      # It's not possible to pass a function pointer to d_call directly, so
+      # qsort will call _compar_code, which will call func_name.
       d_call('qsort', qsort_data, 2, 44, self.vp_compar)
       return struct.unpack('=l', qsort_data[4 : 8])[0]
     else:  # Fast version with callr9, StaticPython-only.
