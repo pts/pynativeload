@@ -2,7 +2,8 @@
 # by pts@fazekas.hu at Sat Dec 14 14:07:10 CET 2019
 # !! Make this 
 
-import dl # 32-bit, Unix, Python 2 only.
+import dl # 32-bit, Unix, Python 2 only.  !! Verify.
+import struct
 
 def addmul(a, b, c, d, e, f, g, h, i):
   r = a * b + c * d + e * f + g * h + i
@@ -14,6 +15,14 @@ def addmul(a, b, c, d, e, f, g, h, i):
 # TODO(pts): Check for i686.
 addmul_code = (
     # compar:  # TODO(pts): Make it smaller.
+    # int compar(struct args *a, struct args *b) {
+    #   if (b->v & 1) a = b;
+    #   if (a->v & 1) {
+    #     a->v &= 6;  /* Don't trigger again. */
+    #     a->a = a->p(a->a, a->b, a->c, a->d, a->e, a->f, a->g, a->h, a->i);
+    #   }
+    #   return 0;
+    # }
     '53'         # push   %ebx
     '83ec38'     # sub    $0x38,%esp
     '8b5c2440'   # mov    0x40(%esp),%ebx
@@ -67,33 +76,90 @@ addmul_code = (
     '01d0'       # add    %edx,%eax
     '03442424'   # add    0x24(%esp),%eax
     'c3'         # ret    
+    'c3'         # ret, will be skipped
+    'c3'         # ret, will be skipped
+    'c3'         # ret, will be skipped
+    # xorp32:
+    '8b442404'   # mov    0x4(%esp),%eax
+    '8b542408'   # mov    0x8(%esp),%edx
+    '8b12'       # mov    (%edx),%edx
+    '3110'       # xor    %edx,(%eax)
+    'c3'         # ret    
 ).decode('hex')
 
 print addmul(13, 12, 11, 10, 9, 8, 7, 6, 5)  #: 385
 print addmul(5, 6, 7, 8, 9, 10, 11, 12, 13)  #: 321
 
-# !! Linux. Is macOS different?
-import mmap  # For constants only.
-d = dl.open('')  # !! StaticPython-only.
-assert d.sym('mmap')
-assert d.sym('mprotect')
-assert d.sym('munmap')
-assert d.sym('memcpy')
-assert d.sym('qsort')
-# TODO(pts): Call munmap later.
-class MmapReleaser(object):
-  __slots__ = ('p', 'd_call', 'size')
-  def __init__(self, p, d_call, size):
-    self.p, self.d_call, self.size = int(p), d_call, int(size)
-  def __del__(self):
-    self.d_call('munmap', self.p, self.size)
-vp = d.call('mmap', 0, len(addmul_code),
-             mmap.PROT_READ | mmap.PROT_WRITE,
-             mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)
-assert vp != 0
-assert vp != -1
-m = MmapReleaser(vp, d.call, len(addmul_code))
-d.call('memcpy', vp, addmul_code, len(addmul_code))
-d.call('mprotect', vp, len(addmul_code), mmap.PROT_READ | mmap.PROT_EXEC)
-# Segmentation fault.
-print d.call('callr9', 5, 6, 7, 8, 9, 10, 11, 12, 13, vp + addmul_code.find('\xc3\xc3\xc3\x8b') + 3)  # :321
+def test_native_dl():
+  # !! Linux. Is macOS different?
+  import mmap  # For constants only.
+  d = dl.open('')  # !! StaticPython-only.
+  assert d.sym('mmap')
+  assert d.sym('mprotect')
+  assert d.sym('munmap')
+  assert d.sym('memcpy')
+  assert d.sym('qsort')
+  # TODO(pts): Call munmap later.
+  class MmapReleaser(object):
+    __slots__ = ('p', 'd_call', 'size')
+    def __init__(self, p, d_call, size):
+      self.p, self.d_call, self.size = int(p), d_call, int(size)
+    def __del__(self):
+      self.d_call('munmap', self.p, self.size)
+  vp = d.call('mmap', 0, len(addmul_code),
+               mmap.PROT_READ | mmap.PROT_WRITE,
+               mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)
+  assert vp != 0
+  assert vp != -1
+  m = MmapReleaser(vp, d.call, len(addmul_code))
+  d.call('memcpy', vp, addmul_code, len(addmul_code))
+  d.call('mprotect', vp, len(addmul_code), mmap.PROT_READ | mmap.PROT_EXEC)
+  vp_compar = vp
+  vp_addmul = vp + addmul_code.find('\xc3\xc3\xc3\x8b\x54') + 3
+  vp_xord32 = vp + addmul_code.find('\xc3\xc3\xc3\x8b\x44') + 3
+
+  args = (5, 6, 7, 8, 9, 10, 11, 12, 13, vp_addmul)
+  print d.call('callr9', *args)  # :321
+
+  # struct args {
+  #   int v;
+  #   int a, b, c, d, e, f, g, h, i;
+  #   int (*p)(int a, int b, int c, int d, int e, int f, int g, int h, int i);
+  # };
+  pack_args = ['<12l40x', 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]
+  pack_args[2 : 12] = args  # With vp_addmul in the end.
+  #pack_args[-2] = 0  # !! Function ot called. Why?
+  sort_data = struct.pack(*pack_args)
+  d.call('qsort', sort_data, 2, 44, vp_compar)
+  print struct.unpack('<11l', sort_data[:44])
+  print struct.unpack('<11l', sort_data[44 : 88])
+  result = struct.unpack('<l', sort_data[4 : 8])[0]
+  print result
+
+  sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
+  sb = 'dcba'
+  args = (sa, sb, 0, 0, 0, 0, 0, 0, 0, vp_xord32)
+  d.call('callr9', *args)
+  print [sa, sb]  #: ['%!!%\x00', 'dcba'].
+
+  sa = 'ABCD' + chr(0)  # !! Faster unique string.
+  sb = 'dcba'
+  args = (sa, sb, 0, 0, 0, 0, 0, 0, 0, vp_xord32)
+  pack_args = ['<12l40x', 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]
+  pack_args[2 : 12] = args  # With vp_addmul in the end.
+  #pack_args[2] = id(pack_args[2])  # !! doesn't work
+  #pack_args[3] = id(pack_args[3])  # !!
+  # !! Is extracting from buffer(sa) any faster?
+  pack_args[2] = d.call('memcpy', sa, 0, 0)  # !! Allow buffer etc.
+  pack_args[3] = d.call('memcpy', sb, 0, 0)
+  #pack_args[-2] = 0  # !! Function ot called. Why?
+  sort_data = struct.pack(*pack_args)
+  d.call('qsort', sort_data, 2, 44, vp_compar)
+  print struct.unpack('<11l', sort_data[:44])
+  print struct.unpack('<11l', sort_data[44 : 88])
+  result = struct.unpack('<l', sort_data[4 : 8])[0]
+  print [sa, sb]  #: ['%!!%\x00', 'dcba'].
+
+
+
+test_native_dl()
