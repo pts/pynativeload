@@ -151,14 +151,22 @@ class CallerCtypes(object):
     if not isinstance(addr_map, dict):
       raise TypeError
     import ctypes
+    #ctypes.pythonapi['mmap'].argtypes = ()
+    #assert 0, ctypes.pythonapi['mmap'].argtypes
+    #assert 0, dir(ctypes.pythonapi)
     # Method .from_buffer is missing in Python 2.5. Present in Python 2.6.
     import mmap  # !!
     self.munmap, self.size = ctypes.pythonapi.munmap, len(native_code)
-    ctypes.pythonapi.mprotect.argtypes = (ctypes.c_long, ctypes.c_long, ctypes.c_long)  # !!
-    ctypes.pythonapi.mmap.restype = ctypes.c_long  # !! Pointer. Better get own function object.
-    self.vp = vp = ctypes.pythonapi.mmap(
+    my_mmap = ctypes.pythonapi['mmap']
+    my_mmap.restype = ctypes.c_long
+    assert ctypes.pythonapi['mmap'].argtypes is None  # Doesn't change the original.
+    #ctypes.pythonapi.mmap.restype = ctypes.c_long  # !! Pointer. Better get own function object.
+    #ctypes.pythonapi.mprotect.argtypes = (ctypes.c_long, ctypes.c_long, ctypes.c_long)  # !!
+    self.vp = vp = my_mmap(
         -1, len(native_code), mmap.PROT_READ | mmap.PROT_WRITE,
         mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)  # !! mprotect.
+    if self.vp == -1:
+      raise RuntimeError('mmap failed.')
     print ['A=0x%x\n' % self.vp]
     #ctypes.memmove(ctypes.c_char_p(self.vp), ctypes.addressof(ctypes.c_char_p.from_buffer(bytearray(native_code))), len(native_code))
     # !! Bad.
@@ -170,11 +178,28 @@ class CallerCtypes(object):
     #ctypes.pythonapi.memmove(ctypes.c_char_p(self.vp), ctypes.c_char_p(self.vp + 5), 5)  # !! What's wrong?
     #ctypes.memmove(ctypes.c_char_p(self.vp), ctypes.c_char_p(self.vp + 5), 5)  # !! What's wrong?
     ctypes.memmove(self.vp, native_code, len(native_code))
-    ctypes.pythonapi.mprotect(self.vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC)
+    #mprotect = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)(ctypes.addressof(ctypes.pythonapi.mprotect))  # Doesn't work.
+    #assert 0, ctypes.c_void_p(ctypes.pythonapi.mprotect)
+    #assert 0, type(ctypes.pythonapi.mprotect); ctypes._FuncPtr
+    #assert 0, (type(ctypes.pythonapi.mprotect), ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long, ctypes.c_long))
+    #mprotect_int = ctypes.cast(ctypes.pythonapi.mprotect, ctypes.c_void_p).value  # Works.
+    #mprotect_int = ctypes.pythonapi.mprotect  # Passes ptr as 32-bit. Doesn't work.
+    # !! When to use WINFUNCTYPE?
+    #mprotect = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long, ctypes.c_long)(mprotect_int)
+    mprotect = ctypes.pythonapi['mprotect']
+    mprotect.argtypes = (ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int)  # !! No more c_long.
+    #assert 0, ctypes.WINFUNCTYPE
+    #assert 0, type(mprotect)
+    #assert 0, mprotect.argtypes
+    #assert 0, ctypes.pythonapi.mprotect.argtypes
+    #ctypes.pythonapi.mprotect(self.vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC)
+    if mprotect(self.vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC) == -1:  # !! Still passes self.vp as 32 bits.
+      raise RuntimeError('mprotect failed.')
     self.vp_addr_map = dict((k, vp + v) for k, v in addr_map.iteritems())
     #f = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)(self.vp_addr_map['xorp32_amd64'])
     #assert 0, native_code[addr_map['xorp32_amd64']:].encode('hex')
-    f = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_char_p, ctypes.c_char_p)(self.vp_addr_map['xorp32_amd64'])
+    #f = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_char_p, ctypes.c_char_p)(self.vp_addr_map['xorp32_amd64'])  # Good.
+    f = ctypes.CFUNCTYPE(ctypes.c_long)(self.vp_addr_map['xorp32_amd64'])
     #print f
     sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
     sb = 'dcba'
@@ -185,8 +210,13 @@ class CallerCtypes(object):
     #ctypes.memmove(ctypes.c_char_p(sa), ctypes.c_char_p(sb), 4)  # Works.
     #ctypes.pythonapi.memmove(ctypes.c_char_p(sa), ctypes.c_char_p(sb), 4)  # Works.
     #f(ctypes.c_char_p(sa), ctypes.c_char_p(sb))  # Good.
-    #assert 0, ctypes.c_long(None)  # Error.
-    f(sa, sb)  # Good.
+    #f(sa, sb)
+    sai = ctypes.cast(ctypes.c_char_p(sa), ctypes.c_void_p).value
+    sbi = ctypes.cast(ctypes.c_char_p(sb), ctypes.c_void_p).value
+    #assert sai >> 32
+    #print 'sbi=0x%x' % sbi
+    f(sa, ctypes.c_char_p(sbi))
+    #assert 0, ctypes.c_long(None)  # Error.    f(sa, sb)  # Good.
     print [sa, sb]  #: ['%!!%\x00', 'dcba'].
 
   def __del__(self):
