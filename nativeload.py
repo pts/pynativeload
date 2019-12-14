@@ -117,49 +117,47 @@ def test_native_dl():
   vp_compar = vp
   vp_addmul = vp + addmul_code.find('\xc3\xc3\xc3\x8b\x54') + 3
   vp_xord32 = vp + addmul_code.find('\xc3\xc3\xc3\x8b\x44') + 3
+  d_call = d.call
+
+
+  def callc1(vp_func, *args):  # Uses d_call.
+    a = ['callr9']
+    a.extend(args)
+    padc = 10 - len(a)
+    if padc:
+      if padc < 0:
+        raise ValueError('At most 9 arguments accepted.')
+      a.extend((0, 0, 0, 0, 0, 0, 0, 0, 0, 0)[:padc])
+    a.append(vp_func)
+    return d_call(*a)
+
+  def callc2(vp_func, *args):  # Uses vp_compar. # !! Align it to 16.
+    if len(args) > 9:
+      raise ValueError('At most 9 arguments accepted.')
+    a = [0] * 22
+    for i, arg in enumerate(args):
+      if isinstance(arg, str):
+        arg = d.call('memcpy', arg, 0, 0)  # Convert data pointer to integer.
+      a[i + 1] = arg
+    a[0], a[10], a[11] = 3, vp_func, 4
+    qsort_data = struct.pack('=22l', *a)
+    d_call('qsort', qsort_data, 2, 44, vp_compar)
+    return struct.unpack('=l', qsort_data[4 : 8])[0]
 
   args = (5, 6, 7, 8, 9, 10, 11, 12, 13, vp_addmul)
   print d.call('callr9', *args)  # :321
-
-  # struct args {
-  #   int v;
-  #   int a, b, c, d, e, f, g, h, i;
-  #   int (*p)(int a, int b, int c, int d, int e, int f, int g, int h, int i);
-  # };
-  pack_args = ['<12l40x', 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]
-  pack_args[2 : 12] = args  # With vp_addmul in the end.
-  #pack_args[-2] = 0  # !! Function ot called. Why?
-  sort_data = struct.pack(*pack_args)
-  d.call('qsort', sort_data, 2, 44, vp_compar)
-  print struct.unpack('<11l', sort_data[:44])
-  print struct.unpack('<11l', sort_data[44 : 88])
-  result = struct.unpack('<l', sort_data[4 : 8])[0]
-  print result
+  print callc1(vp_addmul, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+  print callc2(vp_addmul, 5, 6, 7, 8, 9, 10, 11, 12, 13)
 
   sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
   sb = 'dcba'
-  args = (sa, sb, 0, 0, 0, 0, 0, 0, 0, vp_xord32)
-  d.call('callr9', *args)
+  callc1(vp_xord32, sa, sb)
   print [sa, sb]  #: ['%!!%\x00', 'dcba'].
 
-  sa = 'ABCD' + chr(0)  # !! Faster unique string.
+  sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
   sb = 'dcba'
-  args = (sa, sb, 0, 0, 0, 0, 0, 0, 0, vp_xord32)
-  pack_args = ['<12l40x', 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]
-  pack_args[2 : 12] = args  # With vp_addmul in the end.
-  #pack_args[2] = id(pack_args[2])  # !! doesn't work
-  #pack_args[3] = id(pack_args[3])  # !!
-  # !! Is extracting from buffer(sa) any faster?
-  pack_args[2] = d.call('memcpy', sa, 0, 0)  # !! Allow buffer etc.
-  pack_args[3] = d.call('memcpy', sb, 0, 0)
-  #pack_args[-2] = 0  # !! Function ot called. Why?
-  sort_data = struct.pack(*pack_args)
-  d.call('qsort', sort_data, 2, 44, vp_compar)
-  print struct.unpack('<11l', sort_data[:44])
-  print struct.unpack('<11l', sort_data[44 : 88])
-  result = struct.unpack('<l', sort_data[4 : 8])[0]
+  callc2(vp_xord32, sa, sb)
   print [sa, sb]  #: ['%!!%\x00', 'dcba'].
-
 
 
 test_native_dl()
