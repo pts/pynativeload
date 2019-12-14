@@ -1,8 +1,7 @@
 #! /usr/bin/python
 # by pts@fazekas.hu at Sat Dec 14 14:07:10 CET 2019
-# !! Make this 
+# !! Make this work in Python 3.
 
-import dl # 32-bit, Unix, Python 2 only.  !! Verify.
 import struct
 
 
@@ -73,8 +72,7 @@ class CallerDl(object):
       raise TypeError
     if not isinstance(addr_map, dict):
       raise TypeError
-    compar_ofs = (len(native_code) + 15) & ~15
-    native_code += '\x90' * (compar_ofs - len(native_code)) + _compar_code  # !! Omit _compar_code if not needed.
+    import dl # 32-bit, Unix, Python 2 only.  !! Verify.
     # !! Linux. Is macOS different?
     import mmap  # For constants only.
     d = dl.open('')
@@ -83,6 +81,11 @@ class CallerDl(object):
     assert d.sym('munmap')
     assert d.sym('memcpy')
     assert d.sym('qsort')
+    if d.sym('callr9'):
+      compar_ofs = -1
+    else:
+      compar_ofs = (len(native_code) + 15) & ~15
+      native_code += '\x90' * (compar_ofs - len(native_code)) + _compar_code  # !! Omit _compar_code if not needed.
     vp = d.call('mmap', 0, len(native_code),
                  mmap.PROT_READ | mmap.PROT_WRITE,
                  mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)
@@ -91,7 +94,10 @@ class CallerDl(object):
     self.vp, self.d_call, self.size = vp, d.call, len(native_code)
     d.call('memcpy', vp, native_code, len(native_code))
     d.call('mprotect', vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC)
-    self.vp_compar = vp + compar_ofs
+    if compar_ofs >= 0:
+      self.vp_compar = vp + compar_ofs
+    else:
+      self.vp_compar = 0
     self.vp_addr_map = dict((k, vp + v) for k, v in addr_map.iteritems())
 
   def __del__(self):
@@ -100,32 +106,34 @@ class CallerDl(object):
       self.vp = 0
     # We can't call dlclose(3) directly, `import dl' doesn't have that.
 
-  def callc1(self, func_name, *args):  # Uses vp, d_call, vp_addr_map.
+  def callc(self, func_name, *args):
+    """Args are int, str (bytes) or None."""
+  
     # !! Populate methods directly instead.
-    a = ['callr9']
-    a.extend(args)
-    padc = 10 - len(a)
-    if padc:
-      if padc < 0:
+    if self.vp_compar:  # Slow but compatible version with qsort.
+      if len(args) > 9:
         raise ValueError('At most 9 arguments accepted.')
-      a.extend((0, 0, 0, 0, 0, 0, 0, 0, 0, 0)[:padc])
-    a.append(self.vp_addr_map[func_name])
-    return self.d_call(*a)
-
-  def callc2(self, func_name, *args):  # Uses vp, d_call, vp_compar, vp_addr_map.
-    if len(args) > 9:
-      raise ValueError('At most 9 arguments accepted.')
-    d_call = self.d_call
-    a = [0] * 22
-    for i, arg in enumerate(args):
-      if isinstance(arg, str):
-        arg = d_call('memcpy', arg, 0, 0)  # Convert data pointer to integer.
-      a[i + 1] = arg
-    a[0], a[10], a[11] = 3, self.vp_addr_map[func_name], 4
-    qsort_data = struct.pack('=22l', *a)
-    d_call('qsort', qsort_data, 2, 44, self.vp_compar)
-    return struct.unpack('=l', qsort_data[4 : 8])[0]
-
+      d_call = self.d_call
+      a = [0] * 22
+      for i, arg in enumerate(args):
+        if isinstance(arg, str):
+          arg = d_call('memcpy', arg, 0, 0)  # Convert data pointer to integer.
+        a[i + 1] = arg
+      a[0], a[10], a[11] = 3, self.vp_addr_map[func_name], 4
+      qsort_data = struct.pack('=22l', *a)
+      d_call('qsort', qsort_data, 2, 44, self.vp_compar)
+      return struct.unpack('=l', qsort_data[4 : 8])[0]
+    else:  # Fast version with callr9, StaticPython-only.
+      # !! Make it faster by using calll9, no need for a.extend.
+      a = ['callr9']
+      a.extend(args)
+      padc = 10 - len(a)
+      if padc:
+        if padc < 0:
+          raise ValueError('At most 9 arguments accepted.')
+        a.extend((0, 0, 0, 0, 0, 0, 0, 0, 0, 0)[:padc])
+      a.append(self.vp_addr_map[func_name])
+      return self.d_call(*a)
 
 
 if __name__ == '__main__':
@@ -166,15 +174,9 @@ if __name__ == '__main__':
   print addmul(5, 6, 7, 8, 9, 10, 11, 12, 13)  #: 321
   caller = CallerDl(addmul_code + xorp32_code, {'addmul': 0, 'xorp32': len(addmul_code)})
 
-  print caller.callc1('addmul', 5, 6, 7, 8, 9, 10, 11, 12, 13)
-  print caller.callc2('addmul', 5, 6, 7, 8, 9, 10, 11, 12, 13)
+  print caller.callc('addmul', 5, 6, 7, 8, 9, 10, 11, 12, 13)
 
   sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
   sb = 'dcba'
-  caller.callc1('xorp32', sa, sb)
-  print [sa, sb]  #: ['%!!%\x00', 'dcba'].
-
-  sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
-  sb = 'dcba'
-  caller.callc2('xorp32', sa, sb)
+  caller.callc('xorp32', sa, sb)
   print [sa, sb]  #: ['%!!%\x00', 'dcba'].
