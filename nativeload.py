@@ -142,7 +142,7 @@ class CallerDl(object):
 class CallerCtypes(object):
   """Uses `import dl'. Works in Python 2 on i386 Unix (not Windows) only."""
 
-  __slots__ = ('vp', 'size', 'munmap', 'vp_addr_map')
+  __slots__ = ('vp', 'size', 'munmap', 'vp_addr_map', 'vp_func_map', 'c_char_p')
 
   def __init__(self, native_code, addr_map):
     self.vp = 0
@@ -151,78 +151,35 @@ class CallerCtypes(object):
     if not isinstance(addr_map, dict):
       raise TypeError
     import ctypes
-    #ctypes.pythonapi['mmap'].argtypes = ()
-    #assert 0, ctypes.pythonapi['mmap'].argtypes
-    #assert 0, dir(ctypes.pythonapi)
-    # Method .from_buffer is missing in Python 2.5. Present in Python 2.6.
-    import mmap  # !!
-    self.munmap, self.size = ctypes.pythonapi.munmap, len(native_code)
-    my_mmap = ctypes.pythonapi['mmap']
-    my_mmap.restype = ctypes.c_long
+    import mmap  # !! Just constants.
+    self.munmap, self.size = ctypes.pythonapi['munmap'], len(native_code)
+    self.munmap.argtypes = (ctypes.c_size_t, ctypes.c_size_t)
+    mmap_func = ctypes.pythonapi['mmap']
+    mmap_func.restype = ctypes.c_long
     assert ctypes.pythonapi['mmap'].argtypes is None  # Doesn't change the original.
-    #ctypes.pythonapi.mmap.restype = ctypes.c_long  # !! Pointer. Better get own function object.
-    #ctypes.pythonapi.mprotect.argtypes = (ctypes.c_long, ctypes.c_long, ctypes.c_long)  # !!
-    self.vp = vp = my_mmap(
+    self.vp = vp = mmap_func(
         -1, len(native_code), mmap.PROT_READ | mmap.PROT_WRITE,
         mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)  # !! mprotect.
     if self.vp == -1:
       raise RuntimeError('mmap failed.')
-    print ['A=0x%x\n' % self.vp]
-    #ctypes.memmove(ctypes.c_char_p(self.vp), ctypes.addressof(ctypes.c_char_p.from_buffer(bytearray(native_code))), len(native_code))
-    # !! Bad.
-    #assert 0, (ctypes.c_char_p(self.vp), self.vp)
-    #ctypes.memmove(self.vp, self.vp + 5, 5)  # !! What's wrong?
-    #ctypes.pythonapi.malloc.restype = ctypes.c_long
-    #self.vp = ctypes.pythonapi.malloc(42000000) # & 0xffffffffffffffff
-    #print ['B=0x%x\n' % self.vp, self.vp, ctypes.c_char_p(self.vp)]
-    #ctypes.pythonapi.memmove(ctypes.c_char_p(self.vp), ctypes.c_char_p(self.vp + 5), 5)  # !! What's wrong?
-    #ctypes.memmove(ctypes.c_char_p(self.vp), ctypes.c_char_p(self.vp + 5), 5)  # !! What's wrong?
     ctypes.memmove(self.vp, native_code, len(native_code))
-    #mprotect = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)(ctypes.addressof(ctypes.pythonapi.mprotect))  # Doesn't work.
-    #assert 0, ctypes.c_void_p(ctypes.pythonapi.mprotect)
-    #assert 0, type(ctypes.pythonapi.mprotect); ctypes._FuncPtr
-    #assert 0, (type(ctypes.pythonapi.mprotect), ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long, ctypes.c_long))
-    #mprotect_int = ctypes.cast(ctypes.pythonapi.mprotect, ctypes.c_void_p).value  # Works.
-    #mprotect_int = ctypes.pythonapi.mprotect  # Passes ptr as 32-bit. Doesn't work.
-    # !! When to use WINFUNCTYPE?
-    #mprotect = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long, ctypes.c_long)(mprotect_int)
     mprotect = ctypes.pythonapi['mprotect']
+    # Here it doesn't accept ctypes.c_char_p, but ctypes.c_char_p(42) is OK.
     mprotect.argtypes = (ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int)  # !! No more c_long.
-    #assert 0, ctypes.WINFUNCTYPE
-    #assert 0, type(mprotect)
-    #assert 0, mprotect.argtypes
-    #assert 0, ctypes.pythonapi.mprotect.argtypes
-    #ctypes.pythonapi.mprotect(self.vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC)
     if mprotect(self.vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC) == -1:  # !! Still passes self.vp as 32 bits.
       raise RuntimeError('mprotect failed.')
     self.vp_addr_map = dict((k, vp + v) for k, v in addr_map.iteritems())
-    #f = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)(self.vp_addr_map['xorp32_amd64'])
-    #assert 0, native_code[addr_map['xorp32_amd64']:].encode('hex')
-    #f = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_char_p, ctypes.c_char_p)(self.vp_addr_map['xorp32_amd64'])  # Good.
-    f = ctypes.CFUNCTYPE(ctypes.c_long)(self.vp_addr_map['xorp32_amd64'])
-    #print f
-    sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
-    sb = 'dcba'
-    #sa = bytearray(sa)
-    #sb = bytearray(sb)
-    #f(ctypes.addressof(ctypes.c_char_p(sa)), ctypes.addressof(ctypes.c_char_p(sb)))
-    #f(ctypes.c_long(ctypes.c_char_p(sa)), ctypes.c_long(ctypes.c_char_p(sb)))
-    #ctypes.memmove(ctypes.c_char_p(sa), ctypes.c_char_p(sb), 4)  # Works.
-    #ctypes.pythonapi.memmove(ctypes.c_char_p(sa), ctypes.c_char_p(sb), 4)  # Works.
-    #f(ctypes.c_char_p(sa), ctypes.c_char_p(sb))  # Good.
-    #f(sa, sb)
-    sai = ctypes.cast(ctypes.c_char_p(sa), ctypes.c_void_p).value
-    sbi = ctypes.cast(ctypes.c_char_p(sb), ctypes.c_void_p).value
-    #assert sai >> 32
-    #print 'sbi=0x%x' % sbi
-    f(sa, ctypes.c_char_p(sbi))
-    #assert 0, ctypes.c_long(None)  # Error.    f(sa, sb)  # Good.
-    print [sa, sb]  #: ['%!!%\x00', 'dcba'].
+    self.c_char_p = ctypes.c_char_p
+    func_ret_long = ctypes.CFUNCTYPE(ctypes.c_long)
+    self.vp_func_map = dict((k, func_ret_long(vp + v)) for k, v in addr_map.iteritems())
 
   def __del__(self):
     if self.vp:
       self.munmap(self.vp, self.size)
       self.vp = 0
+
+  def callc(self, func_name, *args):
+    return self.vp_func_map[func_name](*map(self.c_char_p, args))
 
 
 if __name__ == '__main__':
@@ -245,9 +202,19 @@ if __name__ == '__main__':
       '01d0'       # add    %edx,%eax
       '03442424'   # add    0x24(%esp),%eax
       'c3'         # ret    
-      'c3'         # ret, will be skipped
-      'c3'         # ret, will be skipped
-      'c3'         # ret, will be skipped
+  ).decode('hex')
+
+  addmul_amd64_code = (
+      '0fafd1'      # imul   %ecx,%edx
+      '8b4c2410'    # mov    0x10(%rsp),%ecx
+      '0faf4c2408'  # imul   0x8(%rsp),%ecx
+      '0faffe'      # imul   %esi,%edi
+      '450fafc1'    # imul   %r9d,%r8d
+      '01d7'        # add    %edx,%edi
+      '4401c7'      # add    %r8d,%edi
+      '8d040f'      # lea    (%rdi,%rcx,1),%eax
+      '03442418'    # add    0x18(%rsp),%eax
+      'c3'          # retq   
   ).decode('hex')
 
   xorp32_code = (
@@ -269,12 +236,20 @@ if __name__ == '__main__':
   print addmul(13, 12, 11, 10, 9, 8, 7, 6, 5)  #: 385
   print addmul(5, 6, 7, 8, 9, 10, 11, 12, 13)  #: 321
 
+  native_code = addmul_code + xorp32_code + xorp32_amd64_code + addmul_amd64_code
+  addr_map = {'addmul': 0, 'xorp32': len(addmul_code), 'xorp32_amd64': len(addmul_code) + len(xorp32_code), 'addmul_amd64': len(addmul_code) + len(xorp32_code) + len(xorp32_amd64_code)}
+
   if 0:
-    caller = CallerDl(addmul_code + xorp32_code + xorp32_amd64_code, {'addmul': 0, 'xorp32': len(addmul_code), 'xorp32_amd64': len(addmul_code) + len(xorp32_code)})
+    caller = CallerDl(native_code, addr_map)
     print caller.callc('addmul', 5, 6, 7, 8, 9, 10, 11, 12, 13)
     sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
     sb = 'dcba'
     caller.callc('xorp32', sa, sb)
     print [sa, sb]  #: ['%!!%\x00', 'dcba'].
 
-  caller = CallerCtypes(addmul_code + xorp32_code + xorp32_amd64_code, {'addmul': 0, 'xorp32': len(addmul_code), 'xorp32_amd64': len(addmul_code) + len(xorp32_code)})
+  caller = CallerCtypes(native_code, addr_map)
+  print caller.callc('addmul_amd64', 5, 6, 7, 8, 9, 10, 11, 12, 13)
+  sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
+  sb = 'dcba'
+  caller.callc('xorp32_amd64', sa, sb)
+  print [sa, sb]  #: ['%!!%\x00', 'dcba'].
