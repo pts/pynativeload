@@ -61,6 +61,9 @@ _compar_code = (
 assert not len(_compar_code) % 15
 
 
+# !! Add win32 support etc.
+
+
 class CallerDl(object):
   """Uses `import dl'. Works in Python 2 on i386 Unix (not Windows) only."""
 
@@ -76,7 +79,7 @@ class CallerDl(object):
     # !! Linux. Is macOS different?
     import mmap  # For constants only.
     d = dl.open('')
-    assert d.sym('mmap')
+    assert d.sym('mmap')  # !! No assert please.
     assert d.sym('mprotect')
     assert d.sym('munmap')
     assert d.sym('memcpy')
@@ -86,12 +89,12 @@ class CallerDl(object):
     else:
       compar_ofs = (len(native_code) + 15) & ~15
       native_code += '\x90' * (compar_ofs - len(native_code)) + _compar_code  # !! Omit _compar_code if not needed.
-    vp = d.call('mmap', 0, len(native_code),
+    self.d_call, self.size = vp, d.call, len(native_code)
+    self.vp = vp = d.call('mmap', 0, len(native_code),
                  mmap.PROT_READ | mmap.PROT_WRITE,
                  mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)
     assert vp != 0
     assert vp != -1
-    self.vp, self.d_call, self.size = vp, d.call, len(native_code)
     d.call('memcpy', vp, native_code, len(native_code))
     d.call('mprotect', vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC)
     if compar_ofs >= 0:
@@ -101,7 +104,7 @@ class CallerDl(object):
     self.vp_addr_map = dict((k, vp + v) for k, v in addr_map.iteritems())
 
   def __del__(self):
-    if self.vp:
+    if self.vp and self.vp != -1:
       self.d_call('munmap', self.vp, self.size)
       self.vp = 0
     # We can't call dlclose(3) directly, `import dl' doesn't have that.
@@ -134,6 +137,62 @@ class CallerDl(object):
         a.extend((0, 0, 0, 0, 0, 0, 0, 0, 0, 0)[:padc])
       a.append(self.vp_addr_map[func_name])
       return self.d_call(*a)
+
+
+class CallerCtypes(object):
+  """Uses `import dl'. Works in Python 2 on i386 Unix (not Windows) only."""
+
+  __slots__ = ('vp', 'size', 'munmap', 'vp_addr_map')
+
+  def __init__(self, native_code, addr_map):
+    self.vp = 0
+    if not isinstance(native_code, str):
+      raise TypeError
+    if not isinstance(addr_map, dict):
+      raise TypeError
+    import ctypes
+    # Method .from_buffer is missing in Python 2.5. Present in Python 2.6.
+    import mmap  # !!
+    self.munmap, self.size = ctypes.pythonapi.munmap, len(native_code)
+    ctypes.pythonapi.mprotect.argtypes = (ctypes.c_long, ctypes.c_long, ctypes.c_long)  # !!
+    ctypes.pythonapi.mmap.restype = ctypes.c_long  # !! Pointer. Better get own function object.
+    self.vp = vp = ctypes.pythonapi.mmap(
+        -1, len(native_code), mmap.PROT_READ | mmap.PROT_WRITE,
+        mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)  # !! mprotect.
+    print ['A=0x%x\n' % self.vp]
+    #ctypes.memmove(ctypes.c_char_p(self.vp), ctypes.addressof(ctypes.c_char_p.from_buffer(bytearray(native_code))), len(native_code))
+    # !! Bad.
+    #assert 0, (ctypes.c_char_p(self.vp), self.vp)
+    #ctypes.memmove(self.vp, self.vp + 5, 5)  # !! What's wrong?
+    #ctypes.pythonapi.malloc.restype = ctypes.c_long
+    #self.vp = ctypes.pythonapi.malloc(42000000) # & 0xffffffffffffffff
+    #print ['B=0x%x\n' % self.vp, self.vp, ctypes.c_char_p(self.vp)]
+    #ctypes.pythonapi.memmove(ctypes.c_char_p(self.vp), ctypes.c_char_p(self.vp + 5), 5)  # !! What's wrong?
+    #ctypes.memmove(ctypes.c_char_p(self.vp), ctypes.c_char_p(self.vp + 5), 5)  # !! What's wrong?
+    ctypes.memmove(self.vp, native_code, len(native_code))
+    ctypes.pythonapi.mprotect(self.vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC)
+    self.vp_addr_map = dict((k, vp + v) for k, v in addr_map.iteritems())
+    #f = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)(self.vp_addr_map['xorp32_amd64'])
+    #assert 0, native_code[addr_map['xorp32_amd64']:].encode('hex')
+    f = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_char_p, ctypes.c_char_p)(self.vp_addr_map['xorp32_amd64'])
+    #print f
+    sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
+    sb = 'dcba'
+    #sa = bytearray(sa)
+    #sb = bytearray(sb)
+    #f(ctypes.addressof(ctypes.c_char_p(sa)), ctypes.addressof(ctypes.c_char_p(sb)))
+    #f(ctypes.c_long(ctypes.c_char_p(sa)), ctypes.c_long(ctypes.c_char_p(sb)))
+    #ctypes.memmove(ctypes.c_char_p(sa), ctypes.c_char_p(sb), 4)  # Works.
+    #ctypes.pythonapi.memmove(ctypes.c_char_p(sa), ctypes.c_char_p(sb), 4)  # Works.
+    #f(ctypes.c_char_p(sa), ctypes.c_char_p(sb))  # Good.
+    #assert 0, ctypes.c_long(None)  # Error.
+    f(sa, sb)  # Good.
+    print [sa, sb]  #: ['%!!%\x00', 'dcba'].
+
+  def __del__(self):
+    if self.vp:
+      self.munmap(self.vp, self.size)
+      self.vp = 0
 
 
 if __name__ == '__main__':
@@ -170,13 +229,22 @@ if __name__ == '__main__':
       'c3'         # ret    
   ).decode('hex')
 
+  xorp32_amd64_code = (
+      # xorp32_amd64:
+      '8b06'       # mov    (%rsi),%eax
+      '3107'       # xor    %eax,(%rdi)
+      'c3'         # retq   
+  ).decode('hex')
+
   print addmul(13, 12, 11, 10, 9, 8, 7, 6, 5)  #: 385
   print addmul(5, 6, 7, 8, 9, 10, 11, 12, 13)  #: 321
-  caller = CallerDl(addmul_code + xorp32_code, {'addmul': 0, 'xorp32': len(addmul_code)})
 
-  print caller.callc('addmul', 5, 6, 7, 8, 9, 10, 11, 12, 13)
+  if 0:
+    caller = CallerDl(addmul_code + xorp32_code + xorp32_amd64_code, {'addmul': 0, 'xorp32': len(addmul_code), 'xorp32_amd64': len(addmul_code) + len(xorp32_code)})
+    print caller.callc('addmul', 5, 6, 7, 8, 9, 10, 11, 12, 13)
+    sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
+    sb = 'dcba'
+    caller.callc('xorp32', sa, sb)
+    print [sa, sb]  #: ['%!!%\x00', 'dcba'].
 
-  sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
-  sb = 'dcba'
-  caller.callc('xorp32', sa, sb)
-  print [sa, sb]  #: ['%!!%\x00', 'dcba'].
+  caller = CallerCtypes(addmul_code + xorp32_code + xorp32_amd64_code, {'addmul': 0, 'xorp32': len(addmul_code), 'xorp32_amd64': len(addmul_code) + len(xorp32_code)})
