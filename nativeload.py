@@ -5,15 +5,13 @@
 import dl # 32-bit, Unix, Python 2 only.  !! Verify.
 import struct
 
+
 def addmul(a, b, c, d, e, f, g, h, i):
   r = a * b + c * d + e * f + g * h + i
   return (r & 0x7fffffff) - (r & 0x80000000)  # Sign-extend.
 
-# int addmul(int a, int b, int c, int d, int e, int f, int g, int h, int i) {
-#   return a * b + c * d + e * f + g * h + i;
-# }
-# TODO(pts): Check for i686.
-addmul_code = (
+# Size divisible by 16, good for alignment.
+_compar_code = (
     # compar:  # TODO(pts): Make it smaller.
     # int compar(struct args *a, struct args *b) {
     #   if (b->v & 1) a = b;
@@ -23,6 +21,7 @@ addmul_code = (
     #   }
     #   return 0;
     # }
+    # !! Reuse a->p as null pointer, make it smaller.
     '53'         # push   %ebx
     '83ec38'     # sub    $0x38,%esp
     '8b5c2440'   # mov    0x40(%esp),%ebx
@@ -59,41 +58,20 @@ addmul_code = (
     '83c438'     # add    $0x38,%esp
     '5b'         # pop    %ebx
     'c3'         # ret    
-    'c3'         # ret, will be skipped
-    'c3'         # ret, will be skipped
-    'c3'         # ret, will be skipped
-    # addmul:
-    '8b542408'   # mov    0x8(%esp),%edx
-    '8b442410'   # mov    0x10(%esp),%eax
-    '0faf542404' # imul   0x4(%esp),%edx
-    '0faf44240c' # imul   0xc(%esp),%eax
-    '01d0'       # add    %edx,%eax
-    '8b542418'   # mov    0x18(%esp),%edx
-    '0faf542414' # imul   0x14(%esp),%edx
-    '01d0'       # add    %edx,%eax
-    '8b542420'   # mov    0x20(%esp),%edx
-    '0faf54241c' # imul   0x1c(%esp),%edx
-    '01d0'       # add    %edx,%eax
-    '03442424'   # add    0x24(%esp),%eax
-    'c3'         # ret    
-    'c3'         # ret, will be skipped
-    'c3'         # ret, will be skipped
-    'c3'         # ret, will be skipped
-    # xorp32:
-    '8b442404'   # mov    0x4(%esp),%eax
-    '8b542408'   # mov    0x8(%esp),%edx
-    '8b12'       # mov    (%edx),%edx
-    '3110'       # xor    %edx,(%eax)
-    'c3'         # ret    
 ).decode('hex')
+assert not len(_compar_code) % 15
 
-print addmul(13, 12, 11, 10, 9, 8, 7, 6, 5)  #: 385
-print addmul(5, 6, 7, 8, 9, 10, 11, 12, 13)  #: 321
 
-def test_native_dl():
+def test_native_dl(native_code, addr_map):
+  if not isinstance(native_code, str):
+    raise TypeError
+  if not isinstance(addr_map, dict):
+    raise TypeError
+  compar_ofs = (len(native_code) + 15) & ~15
+  native_code += '\x90' * (compar_ofs - len(native_code)) + _compar_code
   # !! Linux. Is macOS different?
   import mmap  # For constants only.
-  d = dl.open('')  # !! StaticPython-only.
+  d = dl.open('')
   assert d.sym('mmap')
   assert d.sym('mprotect')
   assert d.sym('munmap')
@@ -106,21 +84,20 @@ def test_native_dl():
       self.p, self.d_call, self.size = int(p), d_call, int(size)
     def __del__(self):
       self.d_call('munmap', self.p, self.size)
-  vp = d.call('mmap', 0, len(addmul_code),
+  vp = d.call('mmap', 0, len(native_code),
                mmap.PROT_READ | mmap.PROT_WRITE,
                mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)
   assert vp != 0
   assert vp != -1
-  m = MmapReleaser(vp, d.call, len(addmul_code))
-  d.call('memcpy', vp, addmul_code, len(addmul_code))
-  d.call('mprotect', vp, len(addmul_code), mmap.PROT_READ | mmap.PROT_EXEC)
-  vp_compar = vp
-  vp_addmul = vp + addmul_code.find('\xc3\xc3\xc3\x8b\x54') + 3
-  vp_xord32 = vp + addmul_code.find('\xc3\xc3\xc3\x8b\x44') + 3
+  m = MmapReleaser(vp, d.call, len(native_code))
+  d.call('memcpy', vp, native_code, len(native_code))
+  d.call('mprotect', vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC)
+  vp_compar = vp + compar_ofs
   d_call = d.call
+  vp_addr_map = dict((k, vp + v) for k, v in addr_map.iteritems())
+  #vp_addr_map[''] = vp + compar_ofs
 
-
-  def callc1(vp_func, *args):  # Uses d_call.
+  def callc1(func_name, *args):  # Uses vp, d_call, vp_addr_map.
     a = ['callr9']
     a.extend(args)
     padc = 10 - len(a)
@@ -128,10 +105,10 @@ def test_native_dl():
       if padc < 0:
         raise ValueError('At most 9 arguments accepted.')
       a.extend((0, 0, 0, 0, 0, 0, 0, 0, 0, 0)[:padc])
-    a.append(vp_func)
+    a.append(vp_addr_map[func_name])
     return d_call(*a)
 
-  def callc2(vp_func, *args):  # Uses vp_compar. # !! Align it to 16.
+  def callc2(func_name, *args):  # Uses vp, d_call, vp_compar, vp_addr_map.
     if len(args) > 9:
       raise ValueError('At most 9 arguments accepted.')
     a = [0] * 22
@@ -139,25 +116,59 @@ def test_native_dl():
       if isinstance(arg, str):
         arg = d.call('memcpy', arg, 0, 0)  # Convert data pointer to integer.
       a[i + 1] = arg
-    a[0], a[10], a[11] = 3, vp_func, 4
+    a[0], a[10], a[11] = 3, vp_addr_map[func_name], 4
     qsort_data = struct.pack('=22l', *a)
     d_call('qsort', qsort_data, 2, 44, vp_compar)
     return struct.unpack('=l', qsort_data[4 : 8])[0]
 
-  args = (5, 6, 7, 8, 9, 10, 11, 12, 13, vp_addmul)
-  print d.call('callr9', *args)  # :321
-  print callc1(vp_addmul, 5, 6, 7, 8, 9, 10, 11, 12, 13)
-  print callc2(vp_addmul, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+  print callc1('addmul', 5, 6, 7, 8, 9, 10, 11, 12, 13)
+  print callc2('addmul', 5, 6, 7, 8, 9, 10, 11, 12, 13)
 
   sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
   sb = 'dcba'
-  callc1(vp_xord32, sa, sb)
+  callc1('xorp32', sa, sb)
   print [sa, sb]  #: ['%!!%\x00', 'dcba'].
 
   sa = 'ABCD' + chr(0)  # !! Create unique string object faster: str(buffer(...))?
   sb = 'dcba'
-  callc2(vp_xord32, sa, sb)
+  callc2('xorp32', sa, sb)
   print [sa, sb]  #: ['%!!%\x00', 'dcba'].
 
 
-test_native_dl()
+if __name__ == '__main__':
+  # int addmul(int a, int b, int c, int d, int e, int f, int g, int h, int i) {
+  #   return a * b + c * d + e * f + g * h + i;
+  # }
+  # TODO(pts): Check for i686.
+  addmul_code = (
+      # addmul:
+      '8b542408'   # mov    0x8(%esp),%edx
+      '8b442410'   # mov    0x10(%esp),%eax
+      '0faf542404' # imul   0x4(%esp),%edx
+      '0faf44240c' # imul   0xc(%esp),%eax
+      '01d0'       # add    %edx,%eax
+      '8b542418'   # mov    0x18(%esp),%edx
+      '0faf542414' # imul   0x14(%esp),%edx
+      '01d0'       # add    %edx,%eax
+      '8b542420'   # mov    0x20(%esp),%edx
+      '0faf54241c' # imul   0x1c(%esp),%edx
+      '01d0'       # add    %edx,%eax
+      '03442424'   # add    0x24(%esp),%eax
+      'c3'         # ret    
+      'c3'         # ret, will be skipped
+      'c3'         # ret, will be skipped
+      'c3'         # ret, will be skipped
+  ).decode('hex')
+
+  xorp32_code = (
+      # xorp32:
+      '8b442404'   # mov    0x4(%esp),%eax
+      '8b542408'   # mov    0x8(%esp),%edx
+      '8b12'       # mov    (%edx),%edx
+      '3110'       # xor    %edx,(%eax)
+      'c3'         # ret    
+  ).decode('hex')
+
+  print addmul(13, 12, 11, 10, 9, 8, 7, 6, 5)  #: 385
+  print addmul(5, 6, 7, 8, 9, 10, 11, 12, 13)  #: 321
+  test_native_dl(addmul_code + xorp32_code, {'addmul': 0, 'xorp32': len(addmul_code)})
