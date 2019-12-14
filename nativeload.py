@@ -11,53 +11,28 @@ def addmul(a, b, c, d, e, f, g, h, i):
   r = a * b + c * d + e * f + g * h + i
   return (r & 0x7fffffff) - (r & 0x80000000)  # Sign-extend.
 
-# Size divisible by 16, good for alignment.
+
 # i386 (32-bit) only code, `import dl' doesn't support 64-bit.
-_compar_code = (
-    # compar:  # !! TODO(pts): Make it smaller.
-    # !! Copy C code here.
-    '56'          # push   %esi
-    '53'          # push   %ebx
-    '83ec28'      # sub    $0x28,%esp
-    '8b5c2434'    # mov    0x34(%esp),%ebx
-    '83ceff'      # or     $0xffffffff,%esi
-    '833bff'      # cmpl   $0xffffffff,(%ebx)
-    '7509'        # jne    20 <compar+0x1a>
-    '8b5c2438'    # mov    0x38(%esp),%ebx
-    'be01000000'  # mov    $0x1,%esi
-    '8b03'        # mov    (%ebx),%eax
-    '85c0'        # test   %eax,%eax
-    '744a'        # je     70 <compar+0x6a>
-    '8b5328'      # mov    0x28(%ebx),%edx
-    '89542424'    # mov    %edx,0x24(%esp)
-    '8b5324'      # mov    0x24(%ebx),%edx
-    '89542420'    # mov    %edx,0x20(%esp)
-    '8b5320'      # mov    0x20(%ebx),%edx
-    '8954241c'    # mov    %edx,0x1c(%esp)
-    '8b531c'      # mov    0x1c(%ebx),%edx
-    '89542418'    # mov    %edx,0x18(%esp)
-    '8b5318'      # mov    0x18(%ebx),%edx
-    '89542414'    # mov    %edx,0x14(%esp)
-    '8b5314'      # mov    0x14(%ebx),%edx
-    '89542410'    # mov    %edx,0x10(%esp)
-    '8b5310'      # mov    0x10(%ebx),%edx
-    '8954240c'    # mov    %edx,0xc(%esp)
-    '8b530c'      # mov    0xc(%ebx),%edx
-    '89542408'    # mov    %edx,0x8(%esp)
-    '8b5308'      # mov    0x8(%ebx),%edx
-    '89542404'    # mov    %edx,0x4(%esp)
-    '8b5304'      # mov    0x4(%ebx),%edx
-    '891424'      # mov    %edx,(%esp)
-    'ffd0'        # call   *%eax
-    '894304'      # mov    %eax,0x4(%ebx)
-    'c70300000000'  # movl   $0x0,(%ebx)
-    '89f0'        # mov    %esi,%eax
-    '83c428'      # add    $0x28,%esp
-    '5b'          # pop    %ebx
-    '5e'          # pop    %esi
-    'c3'          # ret    
-).decode('hex')
-assert not len(_compar_code) % 15
+# See compar,nasm for source code.
+# It is a smaller version of this C code in the i386 System V ABI:
+# struct args {
+#   int (*p)(int c, int d, int e, int f, int g, int h, int i, int j, int k, int l);
+#   int r[10];
+# };
+# int compar(struct args *a, struct args *b) {
+#   int result = -1;
+#   if ((int)a->p == -1) {
+#     a = b;
+#     result = 1;
+#   }
+#   if (a->p) {
+#     a->r[0] = a->p(a->r[0], a->r[1], a->r[2], a->r[3], a->r[4], a->r[5], a->r[6], a->r[7], a->r[8], a->r[9]);
+#     a->p = 0;
+#   }
+#   return result;
+# }
+_compar_code = '56578B74240C83CAFF833EFF7506F7DA8B742410833E00741A52B90A00000083EC2889E7ADF3A5FFD089FC8946D8588366D4005F5EC390909090909090909090'.decode('hex')
+assert not len(_compar_code) & 15  # Good for alignment.
 
 
 def get_mmap_constants(_cache=[]):
@@ -102,7 +77,6 @@ class CallerDl(object):
       # d.call, but the one in StaticPython does support it, and we can use it
       # for speedup.
       d.call(d.sym('memcpy'))  # 0 is the default for the remaining args.
-      raise TypeError('!!')
       compar_ofs = -1
     except TypeError:
       if not d.sym('qsort'):
@@ -128,14 +102,13 @@ class CallerDl(object):
     self.vp_addr_map = dict((k, vp + v) for k, v in addr_map.iteritems())
 
   def __del__(self):
-    if self.vp not in (0, 1):
+    if self.vp not in (0, -1):
       self.d_call('munmap', self.vp, self.size)
       self.vp = 0
     # We can't call dlclose(3) directly, `import dl' doesn't have that.
 
   def callc(self, func_name, *args):
     """Args are int, str (bytes) or None."""
-  
     # !! Populate methods directly instead.
     if self.vp_compar:  # Slow but compatible version with qsort.
       if len(args) > 10:  # d_call has a limit of 10 anyway.
@@ -173,7 +146,7 @@ class CallerCtypes(object):
     self.munmap, self.size = ctypes.pythonapi['munmap'], len(native_code)
     self.munmap.argtypes = (ctypes.c_size_t, ctypes.c_size_t)
     mmap_func = ctypes.pythonapi['mmap']
-    mmap_func.restype = ctypes.c_long
+    mmap_func.restype = ctypes.c_size_t
     if ctypes.pythonapi['mmap'].argtypes is not None:
       # Each time we use ctypes.pythonapi[...], we want to have a fresh
       # ctypes._FuncPtr object, to avoid making global changes.
@@ -181,19 +154,19 @@ class CallerCtypes(object):
       # Doesn't change the original.
     self.vp = vp = mmap_func(
         -1, len(native_code), mmap.PROT_READ | mmap.PROT_WRITE,
-        mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)  # !! mprotect.
+        mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)
     if self.vp == -1:
       raise RuntimeError('mmap failed.')
     ctypes.memmove(self.vp, native_code, len(native_code))
     mprotect = ctypes.pythonapi['mprotect']
     # Here it doesn't accept ctypes.c_char_p, but ctypes.c_char_p(42) is OK.
-    mprotect.argtypes = (ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int)  # !! No more c_long.
+    mprotect.argtypes = (ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int)
     if mprotect(self.vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC) == -1:  # !! Still passes self.vp as 32 bits.
       raise RuntimeError('mprotect failed.')
     self.vp_addr_map = dict((k, vp + v) for k, v in addr_map.iteritems())
     self.c_char_p = ctypes.c_char_p
-    func_ret_long = ctypes.CFUNCTYPE(ctypes.c_long)
-    self.vp_func_map = dict((k, func_ret_long(vp + v)) for k, v in addr_map.iteritems())
+    func_ret_int = ctypes.CFUNCTYPE(ctypes.c_size_t)  # 32 or 64 bits.
+    self.vp_func_map = dict((k, func_ret_int(vp + v)) for k, v in addr_map.iteritems())
 
   def __del__(self):
     if self.vp:
@@ -223,7 +196,7 @@ if __name__ == '__main__':
       '0faf54241c' # imul   0x1c(%esp),%edx
       '01d0'       # add    %edx,%eax
       '03442424'   # add    0x24(%esp),%eax
-      'c3'         # ret    
+      'c3'         # ret
   ).decode('hex')
 
   addmul_amd64_code = (
@@ -236,7 +209,7 @@ if __name__ == '__main__':
       '4401c7'      # add    %r8d,%edi
       '8d040f'      # lea    (%rdi,%rcx,1),%eax
       '03442418'    # add    0x18(%rsp),%eax
-      'c3'          # retq   
+      'c3'          # retq
   ).decode('hex')
 
   xorp32_code = (
@@ -245,14 +218,14 @@ if __name__ == '__main__':
       '8b542408'   # mov    0x8(%esp),%edx
       '8b12'       # mov    (%edx),%edx
       '3110'       # xor    %edx,(%eax)
-      'c3'         # ret    
+      'c3'         # ret
   ).decode('hex')
 
   xorp32_amd64_code = (
       # xorp32_amd64:
       '8b06'       # mov    (%rsi),%eax
       '3107'       # xor    %eax,(%rdi)
-      'c3'         # retq   
+      'c3'         # retq
   ).decode('hex')
 
   print addmul(13, 12, 11, 10, 9, 8, 7, 6, 5)  #: 385
