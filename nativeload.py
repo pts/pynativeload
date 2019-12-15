@@ -151,7 +151,7 @@ class NativeExtCtypes(object):
 
   def __init__(self, native_code, addr_map):
     # This code works for both 32-bit (x86) and 64-bit (amd64).
-    # !! arm has relative jumps cand calls, mips has absolute jumps and
+    # !! arm has relative jumps and calls, mips has absolute jumps and
     #    calls (but relative conditional branches); how does -fpic work?
     #    relative jumps to avoid relocations usses. Relocate manually in Python?
     # !! add at least newlib for memcpy
@@ -387,7 +387,6 @@ if __name__ == '__main__':
   print elf_arch, sorted(addr_map.iteritems())
 
   native_ext = new_native_ext(native_code, addr_map)
-  # !! SUXX: dl doesn't take long, fix it in StaticPython.
   print native_ext.addmul(5, 6, 7, 8, 9, 10, 11, 12, -13L)
   if get_arch() == 'amd64':
     print native_ext.addmul(0, 0, 0, 0, 0, 0, 0, 0, 1 << 32 | 5) ^ (1 << 32)  #: 5.
