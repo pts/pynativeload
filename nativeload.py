@@ -57,7 +57,7 @@ class NativeExtDl(object):
   #   }
   #   return result;
   # }
-  _compar_code = '56578B74240C83CAFF833EFF7506F7DA8B742410833E00741A52B90A00000083EC2889E7ADF3A5FFD089FC8946D8588366D4005F5EC390909090909090909090'.decode('hex')
+  _compar_code = '56578b74240c83caff833eff7506f7da8b742410833e00741a52b90a00000083ec2889e7adf3a5ffd089fc8946d8588366d4005f5ec390909090909090909090'.decode('hex')
   assert not len(_compar_code) & 15  # Good for alignment.
 
   def __init__(self, native_code, addr_map):
@@ -71,36 +71,37 @@ class NativeExtDl(object):
       raise ValueError('Pointer size mismatch.')
     mmap = get_mmap_constants()
     d = dl.open('')
-    d_call, missing_names = d.call, []
+    d_call, missing_names, alloc_size, trampoline_ofs = d.call, [], len(native_code), -1
     try:
       # Regular `import dl' doesn't support int as the 1st argument of
       # d_call, but the one in StaticPython does support it, and we can use it
       # for speedup.
       d_call(d.sym('memcpy'))  # 0 is the default for the remaining args.
-      compar_ofs = -1
     except TypeError:
       if not d.sym('qsort'):
         missing_names.append('qsort')
-      compar_ofs = (len(native_code) + 15) & ~15
-      native_code += '\x90' * (compar_ofs - len(native_code)) + self._compar_code
+      trampoline_ofs, trampoline = (alloc_size + 15) & ~15, self._compar_code
+      alloc_size = trampoline_ofs + len(trampoline)
     missing_names.extend(name for name in ('mmap', 'mprotect', 'munmap', 'memcpy') if not d.sym(name))
     if missing_names:
       raise RuntimeError('NativeExtDl unusable, names %r missing.' % missing_names)
     vp = d_call(
-        'mmap', -1, len(native_code), mmap.PROT_READ | mmap.PROT_WRITE,
+        'mmap', -1, alloc_size, mmap.PROT_READ | mmap.PROT_WRITE,
         mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)
     if vp in (0, -1):
       raise RuntimeError('mmap failed.')
-    self._del_func, self._del_args = d_call, ('munmap', vp, len(native_code))
+    self._del_func, self._del_args = d_call, ('munmap', vp, alloc_size)
     d_call('memcpy', vp, native_code, len(native_code))
-    if d_call('mprotect', vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC):
+    if trampoline_ofs >= 0:
+      d_call('memcpy', vp + trampoline_ofs, trampoline, len(trampoline))
+    if d_call('mprotect', vp, alloc_size, mmap.PROT_READ | mmap.PROT_EXEC):
       raise RuntimeError('mprotect failed.')
-    if compar_ofs >= 0:
+    if trampoline_ofs >= 0:
       # It's not possible to pass a function pointer to d_call directly, so
       # qsort will call self._compar_code, which will call func_name.
-      _build_call_qsort, d, vp_compar = self._build_call_qsort, self.__dict__, vp + compar_ofs
+      _build_call_qsort, d, vp_trampoline = self._build_call_qsort, self.__dict__, vp + trampoline_ofs
       for func_name, v in addr_map.iteritems():
-        d[func_name] = _build_call_qsort(func_name, vp + v, d_call, vp_compar)
+        d[func_name] = _build_call_qsort(func_name, vp + v, d_call, vp_trampoline)
     else:
       _build_call, d = self._build_call, self.__dict__
       for func_name, v in addr_map.iteritems():
