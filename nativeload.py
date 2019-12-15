@@ -165,31 +165,43 @@ class NativeExtCtypes(object):
     if ctypes.sizeof(ctypes.c_voidp) != struct.calcsize('P'):
       raise ValueError('Pointer size mismatch.')
     imap = __import__('itertools').imap
-    # !! Add win32 support for ctypes, no mmap and especially 64-bit (different ABI).
-    mmap = get_mmap_constants()
-    munmap = ctypes.pythonapi['munmap']
-    # Without .argtypes and .restype in 64-bit mode, values would be
-    # truncated to 32 bits.
-    munmap.argtypes = (ctypes.c_size_t, ctypes.c_size_t)
-    mmap_func = ctypes.pythonapi['mmap']
-    mmap_func.restype = ctypes.c_size_t
-    if ctypes.pythonapi['mmap'].argtypes is not None:
-      # Each time we use ctypes.pythonapi[...], we want to have a fresh
-      # ctypes._FuncPtr object, to avoid making global changes.
-      raise RuntimeError('Unusual global argtypes behavior detected.')
-      # Doesn't change the original.
-    vp = mmap_func(
-        -1, len(native_code), mmap.PROT_READ | mmap.PROT_WRITE,
-        mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)
-    if vp in (0, -1):
-      raise RuntimeError('mmap failed.')
-    self._del_func, self._del_args = munmap, (vp, len(native_code))
-    ctypes.memmove(vp, native_code, len(native_code))
-    mprotect = ctypes.pythonapi['mprotect']
-    # Here it doesn't accept ctypes.c_char_p, but ctypes.c_char_p(42) is OK.
-    mprotect.argtypes = (ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int)
-    if mprotect(vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC) == -1:
-      raise RuntimeError('mprotect failed.')
+    if sys.platform.startswith('win'):
+      MEM_COMMIT, MEM_RESERVE, MEM_RELEASE = 0x1000, 0x2000, 0x8000
+      PAGE_READWRITE, PAGE_EXECUTE_READ = 4, 0x20
+      vp = ctypes.windll.kernel32.VirtualAlloc(0, len(native_code), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
+      if not vp:
+        raise RuntimeError('VirtualAlloc failed: %d' % ctypes.windll.kernel32.GetLastError())
+      self._del_func, self._del_args = ctypes.windll.kernel32.VirtualFree, (vp, 0, MEM_RELEASE)
+      ctypes.memmove(vp, native_code, len(native_code))
+      if not ctypes.windll.kernel32.VirtualProtect(vp, len(native_code), PAGE_EXECUTE_READ, ctypes.addressof(ctypes.c_size_t(0))):
+        raise RuntimeError('VirtualProtect failed: %d' % ctypes.windll.kernel32.GetLastError())
+      if 8 == struct.calcsize('P'):
+        assert 0, '!! Add 64-bit (different ABI), _win64_entry_code'
+    else:
+      mmap = get_mmap_constants()
+      munmap = ctypes.pythonapi['munmap']
+      # Without .argtypes and .restype in 64-bit mode, values would be
+      # truncated to 32 bits.
+      munmap.argtypes = (ctypes.c_size_t, ctypes.c_size_t)
+      mmap_func = ctypes.pythonapi['mmap']
+      mmap_func.restype = ctypes.c_size_t
+      if ctypes.pythonapi['mmap'].argtypes is not None:
+        # Each time we use ctypes.pythonapi[...], we want to have a fresh
+        # ctypes._FuncPtr object, to avoid making global changes.
+        raise RuntimeError('Unusual global argtypes behavior detected.')
+        # Doesn't change the original.
+      vp = mmap_func(
+          -1, len(native_code), mmap.PROT_READ | mmap.PROT_WRITE,
+          mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)
+      if vp in (0, -1):
+        raise RuntimeError('mmap failed.')
+      self._del_func, self._del_args = munmap, (vp, len(native_code))
+      ctypes.memmove(vp, native_code, len(native_code))
+      mprotect = ctypes.pythonapi['mprotect']
+      # Here it doesn't accept ctypes.c_char_p, but ctypes.c_char_p(42) is OK.
+      mprotect.argtypes = (ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int)
+      if mprotect(vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC) == -1:
+        raise RuntimeError('mprotect failed.')
     c_char_p = ctypes.c_char_p
     _build_call, d, c_char_p, func_ret_int = self._build_call, self.__dict__, ctypes.c_char_p, ctypes.CFUNCTYPE(ctypes.c_size_t)
     for func_name, v in addr_map.iteritems():
@@ -221,8 +233,8 @@ def get_arch(_cache=[]):
     if arch == 'unknown' and platform.startswith('win') and os.getenv('PROCESSOR_IDENTIFIER'):
       # This works for Windows XP and up. Also this returns 32 for 32-bit
       # Python on 64-bit system, good.
-      arch = os.getenv('PROCESSOR_IDENTIFIER', '').lower()
-    if 'x86' in arch or '386' in arch or '486' in arch or '586' in arch or '686' in arch or 'ia32' in arch or 'em64t' in arch:
+      arch = os.getenv('PROCESSOR_IDENTIFIER', '').lower().split(None, 1)[0]
+    if 'x86' in arch or '386' in arch or '486' in arch or '586' in arch or '686' in arch or 'ia32' in arch or 'em64t' in arch or 'amd64' in arch or 'x64' in arch:
       arch = 'x86'
     elif ('ia64' in arch or 'ia16' in arch or '286' in arch or '186' in arch or
           '086' in arch or 'arm' in arch or 'mips' in arch or 'risc' in arch or
@@ -265,15 +277,24 @@ def new_native_ext(native_code, addr_map, _cache=[]):
 
 
 def load_elf(filename):
-  subprocess = __import__('subprocess')
-  objdump_cmd = ('objdump', '-x', '--', filename)
-  p = subprocess.Popen(objdump_cmd, stdout=subprocess.PIPE)  # !! Do it in Python code.
-  try:
-    data = p.stdout.read()
-  finally:
-    exit_code = p.wait()
-  if exit_code:
-    raise RuntimeError('objdump_cmd %r failed with exit code %d.' % (objdump_cmd, exit_code))
+  import os
+  import os.path
+  if os.path.isfile(filename + '.objdump'):
+    f = open(filename + '.objdump')
+    try:
+      data = f.read()
+    finally:
+      f.close()
+  else:
+    subprocess = __import__('subprocess')
+    objdump_cmd = ('objdump', '-x', '--', filename)
+    p = subprocess.Popen(objdump_cmd, stdout=subprocess.PIPE)  # !! Do it in Python code.
+    try:
+      data = p.stdout.read()
+    finally:
+      exit_code = p.wait()
+    if exit_code:
+      raise RuntimeError('objdump_cmd %r failed with exit code %d.' % (objdump_cmd, exit_code))
   data = data.replace('\n      ', '      ').rstrip('\n').replace('\nSYMBOL TABLE:\n', '\n\nSYMBOL TABLE:\n').replace('\n\n\n', '\n\n').replace('\n\n', '\n\nBLOCK ')
   block = 'header'
   elf_arch = None
@@ -327,6 +348,8 @@ if __name__ == '__main__':
     elf_arch, native_code, addr_map = load_elf('nexa32.elf')
   elif get_arch() == 'amd64':
     elf_arch, native_code, addr_map = load_elf('nexa64.elf')
+  else:
+    raise ValueError('Native code missing for architecture: %s' % get_arch())
   if elf_arch != get_arch():
     raise ValueError('Architecture mismatch: elf=%s native=%s' % (elf_arch, get_arch()))
   print elf_arch, sorted(addr_map.iteritems())
