@@ -139,11 +139,10 @@ class NativeExtDl(object):
 class NativeExtCtypes(object):
   """Uses `import ctypes'. Works in Python >=2.5."""
 
-  #__slots__ = ('vp', 'size', 'munmap', 'vp_addr_map', 'vp_func_map', 'c_char_p')  # !!!
-
   def __init__(self, native_code, addr_map):
-    # This code works on any architecture, both 32-bit and 64-bit.
-    self.vp = 0  # !!
+    # This code works on any architecture, both 32-bit and 64-bit (but
+    # native_code must be valid for that architecture).
+    self._del_func, self._del_args = lambda: 0, ()  # Everything else is from addr_map.
     if not isinstance(native_code, str):
       raise TypeError
     if not isinstance(addr_map, dict):
@@ -154,10 +153,10 @@ class NativeExtCtypes(object):
     imap = __import__('itertools').imap
     # !! Add win32 support for ctypes, no mmap and especially 64-bit (different ABI).
     mmap = get_mmap_constants()
-    self.munmap, self.size = ctypes.pythonapi['munmap'], len(native_code)
+    munmap = ctypes.pythonapi['munmap']
     # Without .argtypes and .restype in 64-bit mode, values would be
     # truncated to 32 bits.
-    self.munmap.argtypes = (ctypes.c_size_t, ctypes.c_size_t)
+    munmap.argtypes = (ctypes.c_size_t, ctypes.c_size_t)
     mmap_func = ctypes.pythonapi['mmap']
     mmap_func.restype = ctypes.c_size_t
     if ctypes.pythonapi['mmap'].argtypes is not None:
@@ -165,27 +164,25 @@ class NativeExtCtypes(object):
       # ctypes._FuncPtr object, to avoid making global changes.
       raise RuntimeError('Unusual global argtypes behavior detected.')
       # Doesn't change the original.
-    self.vp = vp = mmap_func(
+    vp = mmap_func(
         -1, len(native_code), mmap.PROT_READ | mmap.PROT_WRITE,
         mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)
-    if self.vp == -1:
+    if vp in (0, -1):
       raise RuntimeError('mmap failed.')
-    ctypes.memmove(self.vp, native_code, len(native_code))
+    self._del_func, self._del_args = munmap, (vp, len(native_code))
+    ctypes.memmove(vp, native_code, len(native_code))
     mprotect = ctypes.pythonapi['mprotect']
     # Here it doesn't accept ctypes.c_char_p, but ctypes.c_char_p(42) is OK.
     mprotect.argtypes = (ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int)
-    if mprotect(self.vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC) == -1:  # !! Still passes self.vp as 32 bits.
+    if mprotect(vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC) == -1:
       raise RuntimeError('mprotect failed.')
-    self.vp_addr_map = dict((k, vp + v) for k, v in addr_map.iteritems())
     c_char_p = ctypes.c_char_p
     _build_call, d, c_char_p, func_ret_int = self._build_call, self.__dict__, ctypes.c_char_p, ctypes.CFUNCTYPE(ctypes.c_size_t)
     for func_name, v in addr_map.iteritems():
       d[func_name] = _build_call(func_name, func_ret_int(vp + v), imap, c_char_p)
 
   def __del__(self):
-    if self.vp:
-      self.munmap(self.vp, self.size)
-      self.vp = 0
+    self._del_func(*self._del_args)
 
   @staticmethod
   def _build_call(func_name, func_obj, imap, c_char_p):
