@@ -1,2 +1,5 @@
 *~
 *.pyc
+/nexa32.elf
+/nexa64.elf
+/nexa.o
