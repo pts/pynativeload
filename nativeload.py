@@ -210,7 +210,10 @@ def get_arch(_cache=[]):
       arch = os.getenv('PROCESSOR_IDENTIFIER', '').lower()
     if 'x86' in arch or '386' in arch or '486' in arch or '586' in arch or '686' in arch or 'ia32' in arch or 'em64t' in arch:
       arch = 'x86'
-    elif 'ia64' in arch or 'ia16' in arch or '286' in arch or '186' in arch or '086' in arch or 'arm' in arch or 'mips' in arch or 'risc' in arch or 'x32' in arch or 'sparc' in arch or 's390' in arch:
+    elif ('ia64' in arch or 'ia16' in arch or '286' in arch or '186' in arch or
+          '086' in arch or 'arm' in arch or 'mips' in arch or 'risc' in arch or
+          'x32' in arch or 'sparc' in arch or 's390' in arch or 'ppc' in arch or
+          'powerpc' in arch):
       # ia64 is Itanium, not compatible with amd64.
       arch = 'other-' + arch
     else:
