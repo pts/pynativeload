@@ -146,7 +146,7 @@ class NativeExtCtypes(object):
   #                                       long (*fs)(long a, long b, long c, long d, long e, long f, long g, long h, long i, long j)) {
   # return fs(a, b, c, d, e, f, g, h, i, j);
   # }
-  _win64_trampoline = '574889cf4c89c9564889d64c89c24883ec28488b8424880000004c8b4c24684c8b4424604889442418488b8424800000004889442410488b4424784889442408488b44247048890424ff9424900000004883c4285e5fc3'.decode('hex')
+  _win64_trampoline_code = '574889cf4c89c9564889d64c89c24883ec28488b8424880000004c8b4c24684c8b4424604889442418488b8424800000004889442410488b4424784889442408488b44247048890424ff9424900000004883c4285e5fc3'.decode('hex')
 
   def __init__(self, native_code, addr_map):
     # This code works for both 32-bit (x86) and 64-bit (amd64).
@@ -175,17 +175,20 @@ class NativeExtCtypes(object):
         raise RuntimeError('On Windows only x86 is supported.')
       MEM_COMMIT, MEM_RESERVE, MEM_RELEASE = 0x1000, 0x2000, 0x8000
       PAGE_READWRITE, PAGE_EXECUTE_READ = 4, 0x20
-      vp = ctypes.windll.kernel32.VirtualAlloc(0, len(native_code), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
+      alloc_size = len(native_code)
+      if arch == 'amd64':
+        assert struct.calcsize('P') == 8
+        trampoline_ofs, trampoline = (alloc_size + 15) & ~15, self._win64_trampoline_code
+        alloc_size = trampoline_ofs + len(trampoline)
+      vp = ctypes.windll.kernel32.VirtualAlloc(0, alloc_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
       if not vp:
         raise RuntimeError('VirtualAlloc failed: %d' % ctypes.windll.kernel32.GetLastError())
       self._del_func, self._del_args = ctypes.windll.kernel32.VirtualFree, (vp, 0, MEM_RELEASE)
-      if 8 == struct.calcsize('P') and arch == 'amd64':
-        trampoline_ofs = (len(native_code) + 15) & ~15
-        # !! Here and in NativeExtDl, do 2 memmoves instead (to save memory).
-        native_code += '\x90' * (trampoline_ofs - len(native_code)) + self._win64_trampoline
-        build_call, vp_trampoline = self._build_call_win64, vp + trampoline_ofs
       ctypes.memmove(vp, native_code, len(native_code))
-      if not ctypes.windll.kernel32.VirtualProtect(vp, len(native_code), PAGE_EXECUTE_READ, ctypes.addressof(ctypes.c_size_t(0))):
+      if arch == 'amd64':
+        build_call, vp_trampoline = self._build_call_win64, vp + trampoline_ofs
+        ctypes.memmove(vp_trampoline, trampoline, len(trampoline))
+      if not ctypes.windll.kernel32.VirtualProtect(vp, alloc_size, PAGE_EXECUTE_READ, ctypes.addressof(ctypes.c_size_t(0))):
         raise RuntimeError('VirtualProtect failed: %d' % ctypes.windll.kernel32.GetLastError())
     else:
       mmap = get_mmap_constants()
