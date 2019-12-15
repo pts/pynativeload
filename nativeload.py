@@ -1,6 +1,7 @@
 #! /usr/bin/python
 # by pts@fazekas.hu at Sat Dec 14 14:07:10 CET 2019
 # !! Make this work in Python 3 with ctypes.
+#
 
 import itertools
 import struct
@@ -139,9 +140,22 @@ class NativeExtDl(object):
 class NativeExtCtypes(object):
   """Uses `import ctypes'. Works in Python >=2.5."""
 
+  # Trampoline to call System V amd64 ABI functions from ctypes calling as Windows amd64.
+  #  gcc -m64 -Os -W -Wall -Werror -fomit-frame-pointer -mno-sse -c t.c && objdump -d t.o */
+  # __attribute__((ms_abi)) long passms10(long a, long b, long c, long d, long e, long f, long g, long h, long i, long j,
+  #                                       long (*fs)(long a, long b, long c, long d, long e, long f, long g, long h, long i, long j)) {
+  # return fs(a, b, c, d, e, f, g, h, i, j);
+  # }
+  _win64_entry_code = '574889cf4c89c9564889d64c89c24883ec28488b8424880000004c8b4c24684c8b4424604889442418488b8424800000004889442410488b4424784889442408488b44247048890424ff9424900000004883c4285e5fc3'.decode('hex')
+
   def __init__(self, native_code, addr_map):
-    # This code works on any architecture, both 32-bit and 64-bit (but
-    # native_code must be valid for that architecture).
+    # This code works for both 32-bit (x86) and 64-bit (amd64).
+    # !! arm has relative jumps cand calls, mips has absolute jumps and
+    #    calls (but relative conditional branches); how does -fpic work?
+    #    relative jumps to avoid relocations usses. Relocate manually in Python?
+    # !! add at least newlib for memcpy
+    # !! TODO(pts): Check it for arm (e.g. Raspberry Pi) Linux, it should also work.
+    # !! TODO(pts): Check it for arm (e.g. Raspberry Pi) Windows, it should also work.
     self._del_func, self._del_args = lambda: 0, ()  # Everything else is from addr_map.
     if not isinstance(native_code, str):
       raise TypeError
@@ -213,7 +227,7 @@ def get_arch(_cache=[]):
     elif ('ia64' in arch or 'ia16' in arch or '286' in arch or '186' in arch or
           '086' in arch or 'arm' in arch or 'mips' in arch or 'risc' in arch or
           'x32' in arch or 'sparc' in arch or 's390' in arch or 'ppc' in arch or
-          'powerpc' in arch):
+          'powerpc' in arch or 'aarch' in arch):
       # ia64 is Itanium, not compatible with amd64.
       arch = 'other-' + arch
     else:
