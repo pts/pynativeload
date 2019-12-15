@@ -122,7 +122,7 @@ class NativeExtDl(object):
   def _build_call_qsort(func_name, func_ptr, d_call, vp_compar, pack=struct.pack, unpack=struct.unpack):
     def dl_call(*args):
       if len(args) > 10:  # d_call has a limit of 10 anyway.
-        raise ValueError('At most 9 arguments accepted.')
+        raise ValueError('At most 10 arguments accepted.')
       a = [0] * 13
       for i, arg in enumerate(args):
         if isinstance(arg, str):
@@ -146,7 +146,7 @@ class NativeExtCtypes(object):
   #                                       long (*fs)(long a, long b, long c, long d, long e, long f, long g, long h, long i, long j)) {
   # return fs(a, b, c, d, e, f, g, h, i, j);
   # }
-  _win64_entry_code = '574889cf4c89c9564889d64c89c24883ec28488b8424880000004c8b4c24684c8b4424604889442418488b8424800000004889442410488b4424784889442408488b44247048890424ff9424900000004883c4285e5fc3'.decode('hex')
+  _win64_trampoline = '574889cf4c89c9564889d64c89c24883ec28488b8424880000004c8b4c24684c8b4424604889442418488b8424800000004889442410488b4424784889442408488b44247048890424ff9424900000004883c4285e5fc3'.decode('hex')
 
   def __init__(self, native_code, addr_map):
     # This code works for both 32-bit (x86) and 64-bit (amd64).
@@ -165,18 +165,28 @@ class NativeExtCtypes(object):
     if ctypes.sizeof(ctypes.c_voidp) != struct.calcsize('P'):
       raise ValueError('Pointer size mismatch.')
     imap = __import__('itertools').imap
+    build_call, vp_trampoline = self._build_call, None
     if sys.platform.startswith('win'):
+      arch = get_arch()
+      if arch not in ('x86', 'amd64'):
+        # Python can be built on arm64 as well, but there are no official
+        # release (https://bugs.python.org/issue33125), so it would be hard
+        # to test ABI etc. with nativeload.
+        raise RuntimeError('On Windows only x86 is supported.')
       MEM_COMMIT, MEM_RESERVE, MEM_RELEASE = 0x1000, 0x2000, 0x8000
       PAGE_READWRITE, PAGE_EXECUTE_READ = 4, 0x20
       vp = ctypes.windll.kernel32.VirtualAlloc(0, len(native_code), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
       if not vp:
         raise RuntimeError('VirtualAlloc failed: %d' % ctypes.windll.kernel32.GetLastError())
       self._del_func, self._del_args = ctypes.windll.kernel32.VirtualFree, (vp, 0, MEM_RELEASE)
+      if 8 == struct.calcsize('P') and arch == 'amd64':
+        trampoline_ofs = (len(native_code) + 15) & ~15
+        # !! Here and in NativeExtDl, do 2 memmoves instead (to save memory).
+        native_code += '\x90' * (trampoline_ofs - len(native_code)) + self._win64_trampoline
+        build_call, vp_trampoline = self._build_call_win64, vp + trampoline_ofs
       ctypes.memmove(vp, native_code, len(native_code))
       if not ctypes.windll.kernel32.VirtualProtect(vp, len(native_code), PAGE_EXECUTE_READ, ctypes.addressof(ctypes.c_size_t(0))):
         raise RuntimeError('VirtualProtect failed: %d' % ctypes.windll.kernel32.GetLastError())
-      if 8 == struct.calcsize('P'):
-        assert 0, '!! Add 64-bit (different ABI), _win64_entry_code'
     else:
       mmap = get_mmap_constants()
       munmap = ctypes.pythonapi['munmap']
@@ -203,18 +213,36 @@ class NativeExtCtypes(object):
       if mprotect(vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC) == -1:
         raise RuntimeError('mprotect failed.')
     c_char_p = ctypes.c_char_p
-    _build_call, d, c_char_p, func_ret_int = self._build_call, self.__dict__, ctypes.c_char_p, ctypes.CFUNCTYPE(ctypes.c_size_t)
+    d, c_char_p, func_ret_int = self.__dict__, ctypes.c_char_p, ctypes.CFUNCTYPE(ctypes.c_size_t)
+    trampoline_obj = vp_trampoline and func_ret_int(vp_trampoline)
     for func_name, v in addr_map.iteritems():
-      d[func_name] = _build_call(func_name, func_ret_int(vp + v), imap, c_char_p)
+      d[func_name] = build_call(func_name, vp + v, imap, c_char_p, trampoline_obj, func_ret_int)
 
   def __del__(self):
     self._del_func(*self._del_args)
 
   @staticmethod
-  def _build_call(func_name, func_obj, imap, c_char_p):
+  def _build_call(func_name, vp_func, imap, c_char_p, trampoline_obj, func_ret_int):
+    func_obj = func_ret_int(vp_func)
+
     def ctypes_call(*args):
       # c_char_p can take int or str, good.
       return func_obj(*imap(c_char_p, args))
+
+    del trampoline_obj
+    ctypes_call.__name__ = func_name
+    return ctypes_call
+
+  @staticmethod
+  def _build_call_win64(func_name, vp_func, imap, c_char_p, trampoline_obj, func_ret_int):
+    def ctypes_call(*args):
+      if len(args) > 10:
+        raise ValueError('At most 10 arguments accepted.')
+      a = [0] * 11
+      for i in xrange(len(args)):
+        a[i] = c_char_p(args[i])  # c_char_p can take int or str, good.
+      a[10] = vp_func
+      return trampoline_obj(*a)
 
     ctypes_call.__name__ = func_name
     return ctypes_call
