@@ -246,82 +246,76 @@ def new_native_ext(native_code, addr_map, _cache=[]):
         _cache.append(NativeExtDl)
       except ImportError:
         raise ImportError('Either ctypes or dl is needed.')
+  # !! Check bounds of addr_map here.
   return _cache[-1](native_code, addr_map)
 
 
+def load_elf(filename):
+  subprocess = __import__('subprocess')
+  objdump_cmd = ('objdump', '-x', '--', filename)
+  p = subprocess.Popen(objdump_cmd, stdout=subprocess.PIPE)  # !! Do it in Python code.
+  try:
+    data = p.stdout.read()
+  finally:
+    exit_code = p.wait()
+  if exit_code:
+    raise RuntimeError('objdump_cmd %r failed with exit code %d.' % (objdump_cmd, exit_code))
+  data = data.replace('\n      ', '      ').rstrip('\n').replace('\nSYMBOL TABLE:\n', '\n\nSYMBOL TABLE:\n').replace('\n\n\n', '\n\n').replace('\n\n', '\n\nBLOCK ')
+  block = 'header'
+  elf_arch = None
+  text_addr = text_file_ofs = text_size = None
+  addr_map = {}
+  for line in data.split('\n'):
+    if not line:
+      pass
+    elif line.startswith('architecture:') and block == 'header':
+      elf_arch = line.split()[1].rstrip(',')
+      if elf_arch == 'i386:x86-64':
+        elf_arch = 'amd64'
+      elif elf_arch == 'i386':
+        elf_arch = 'x86'
+    elif line.startswith('BLOCK ') and line.endswith(':'):
+      block = line[6 : - 1]
+    elif block == 'Sections':
+      if not line.startswith('Idx'):
+        items = line.split()
+        i, name, size, vma, lma, file_ofs = int(items[0]), items[1], int(items[2], 16), int(items[3], 16), int(items[4], 16), int(items[5], 16)
+        if name != '.text':
+          raise ValueError('Only .text section expected, found %r; please get rid of global variables.' % name)
+        text_addr, text_file_ofs, text_size = lma, file_ofs, size
+    elif block == 'SYMBOL TABLE':
+      items = line.split()
+      if items[2][0] in '*.':
+        items[2 : 2] = ('',)   # No flags.
+      if len(items) >= 6:
+        addr, stype, flags, section, size, name = int(items[0], 16), items[1], items[2], items[3], int(items[4], 16), items[5]
+        if stype == 'g' and 'F' in flags and section == '.text':
+          #print (addr, size, name)
+          addr_map[name] = addr - text_addr  # !! Check bounds here.
+    #elif line:
+    #  print [block, line]
+  f = open(filename, 'rb')
+  try:
+    f.seek(text_file_ofs)
+    native_code = f.read(text_size)
+  finally:
+    f.close()
+  if len(native_code) < text_size:
+    raise ValueError('File too short for .text section.')
+  return elf_arch, native_code, addr_map
+
+
 if __name__ == '__main__':
-  # int addmul(int a, int b, int c, int d, int e, int f, int g, int h, int i) {
-  #   return a * b + c * d + e * f + g * h + i;
-  # }
-  # TODO(pts): Check for i686.
-  addmul_code = (
-      # addmul:
-      '8b542408'   # mov    0x8(%esp),%edx
-      '8b442410'   # mov    0x10(%esp),%eax
-      '0faf542404' # imul   0x4(%esp),%edx
-      '0faf44240c' # imul   0xc(%esp),%eax
-      '01d0'       # add    %edx,%eax
-      '8b542418'   # mov    0x18(%esp),%edx
-      '0faf542414' # imul   0x14(%esp),%edx
-      '01d0'       # add    %edx,%eax
-      '8b542420'   # mov    0x20(%esp),%edx
-      '0faf54241c' # imul   0x1c(%esp),%edx
-      '01d0'       # add    %edx,%eax
-      '03442424'   # add    0x24(%esp),%eax
-      'c3'         # ret
-  ).decode('hex')
-
-  addmul_amd64_code = (
-      '0fafd1'      # imul   %ecx,%edx
-      '8b4c2410'    # mov    0x10(%rsp),%ecx
-      '0faf4c2408'  # imul   0x8(%rsp),%ecx
-      '0faffe'      # imul   %esi,%edi
-      '450fafc1'    # imul   %r9d,%r8d
-      '01d7'        # add    %edx,%edi
-      '4401c7'      # add    %r8d,%edi
-      '8d040f'      # lea    (%rdi,%rcx,1),%eax
-      '03442418'    # add    0x18(%rsp),%eax
-      'c3'          # retq
-  ).decode('hex')
-
-  addmul64_amd64_code = (
-      '480fafd1'      # imul   %rcx,%rdx
-      '488b4c2410'    # mov    0x10(%rsp),%rcx
-      '480faf4c2408'  # imul   0x8(%rsp),%rcx
-      '480faffe'      # imul   %rsi,%rdi
-      '4d0fafc1'      # imul   %r9,%r8
-      '4801d7'        # add    %rdx,%rdi
-      '4c01c7'        # add    %r8,%rdi
-      '488d040f'      # lea    (%rdi,%rcx,1),%rax
-      '4803442418'    # add    0x18(%rsp),%rax
-      'c3'            # retq
-  ).decode('hex')
-
-  xorp32_code = (
-      # xorp32:
-      '8b442404'   # mov    0x4(%esp),%eax
-      '8b542408'   # mov    0x8(%esp),%edx
-      '8b12'       # mov    (%edx),%edx
-      '3110'       # xor    %edx,(%eax)
-      'c3'         # ret
-  ).decode('hex')
-
-  xorp32_amd64_code = (
-      # xorp32_amd64:
-      '8b06'       # mov    (%rsi),%eax
-      '3107'       # xor    %eax,(%rdi)
-      'c3'         # retq
-  ).decode('hex')
-
   print addmul(13, 12, 11, 10, 9, 8, 7, 6, 5)  #: 385
   print addmul(5, 6, 7, 8, 9, 10, 11, 12, -13)  #: 295
 
   if get_arch() == 'x86':
-    native_code = addmul_code + xorp32_code
-    addr_map = {'addmul': 0, 'xorp32': len(addmul_code)}
+    elf_arch, native_code, addr_map = load_elf('nexa32.elf')
   elif get_arch() == 'amd64':
-    native_code = addmul64_amd64_code + xorp32_amd64_code
-    addr_map = {'addmul': 0, 'xorp32': len(addmul64_amd64_code)}
+    elf_arch, native_code, addr_map = load_elf('nexa64.elf')
+  if elf_arch != get_arch():
+    raise ValueError('Architecture mismatch: elf=%s native=%s' % (elf_arch, get_arch()))
+  print elf_arch, sorted(addr_map.iteritems())
 
   native_ext = new_native_ext(native_code, addr_map)
   # !! SUXX: dl doesn't take long, fix it in StaticPython.
