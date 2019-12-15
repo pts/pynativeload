@@ -1,5 +1,5 @@
 pynativeload: load and call native code from Python
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 pynativeload can load native code (precompiled, architecture-dependent machine
 code) to a Python process and call it. It's similar to C extensions, but it
 has different tradeoffs (e.g. platform-independent, doesn't separate files),
