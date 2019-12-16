@@ -166,7 +166,10 @@ class NativeExtCtypes(object):
     if ctypes.sizeof(ctypes.c_voidp) != struct.calcsize('P'):
       raise ValueError('Pointer size mismatch.')
     imap = __import__('itertools').imap
-    build_call, vp_trampoline = self._build_call, None
+    build_call, vp_trampoline, cst = self._build_call, None, ctypes.c_size_t
+    def with_res_size_t(api_func):
+      api_func.restype = cst  # Without this return values in 64-bit mode would be truncated to 32 bits (both Linux and Windows).
+      return api_func
     if sys.platform.startswith('win'):
       arch = get_arch()
       if arch not in ('x86', 'amd64'):
@@ -181,43 +184,30 @@ class NativeExtCtypes(object):
         assert struct.calcsize('P') == 8
         trampoline_ofs, trampoline = (alloc_size + 15) & ~15, self._win64_trampoline_code
         alloc_size = trampoline_ofs + len(trampoline)
-      vp = ctypes.windll.kernel32.VirtualAlloc(0, alloc_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
+      vp = with_res_size_t(ctypes.windll.kernel32['VirtualAlloc'])(0, cst(alloc_size), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
       if not vp:
         raise RuntimeError('VirtualAlloc failed: %d' % ctypes.windll.kernel32.GetLastError())
-      self._del_func, self._del_args = ctypes.windll.kernel32.VirtualFree, (vp, 0, MEM_RELEASE)
+      self._del_func, self._del_args = ctypes.windll.kernel32['VirtualFree'], (cst(vp), 0, MEM_RELEASE)
       ctypes.memmove(vp, native_code, len(native_code))
       if arch == 'amd64':
         build_call, vp_trampoline = self._build_call_win64, vp + trampoline_ofs
         ctypes.memmove(vp_trampoline, trampoline, len(trampoline))
-      if not ctypes.windll.kernel32.VirtualProtect(vp, alloc_size, PAGE_EXECUTE_READ, ctypes.addressof(ctypes.c_size_t(0))):
+      if not ctypes.windll.kernel32['VirtualProtect'](cst(vp), cst(alloc_size), PAGE_EXECUTE_READ, ctypes.addressof(cst(0))):
         raise RuntimeError('VirtualProtect failed: %d' % ctypes.windll.kernel32.GetLastError())
     else:
       mmap = get_mmap_constants()
-      munmap = ctypes.pythonapi['munmap']
-      # Without .argtypes and .restype in 64-bit mode, values would be
-      # truncated to 32 bits.
-      munmap.argtypes = (ctypes.c_size_t, ctypes.c_size_t)
-      mmap_func = ctypes.pythonapi['mmap']
-      mmap_func.restype = ctypes.c_size_t
-      if ctypes.pythonapi['mmap'].argtypes is not None:
-        # Each time we use ctypes.pythonapi[...], we want to have a fresh
-        # ctypes._FuncPtr object, to avoid making global changes.
-        raise RuntimeError('Unusual global argtypes behavior detected.')
-        # Doesn't change the original.
-      vp = mmap_func(
+      vp = with_res_size_t(ctypes.pythonapi['mmap'])(
           -1, len(native_code), mmap.PROT_READ | mmap.PROT_WRITE,
           mmap.MAP_PRIVATE | mmap.MAP_ANON, -1, 0)
       if vp in (0, -1):
         raise RuntimeError('mmap failed.')
-      self._del_func, self._del_args = munmap, (vp, len(native_code))
+      self._del_func, self._del_args = with_res_size_t(ctypes.pythonapi['munmap']), (cst(vp), cst(len(native_code)))
       ctypes.memmove(vp, native_code, len(native_code))
-      mprotect = ctypes.pythonapi['mprotect']
       # Here it doesn't accept ctypes.c_char_p, but ctypes.c_char_p(42) is OK.
-      mprotect.argtypes = (ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int)
-      if mprotect(vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC) == -1:
+      if with_res_size_t(ctypes.pythonapi['mprotect'])(cst(vp), cst(len(native_code)), mmap.PROT_READ | mmap.PROT_EXEC) == -1:
         raise RuntimeError('mprotect failed.')
     c_char_p = ctypes.c_char_p
-    d, c_char_p, fri = self.__dict__, ctypes.c_char_p, ctypes.CFUNCTYPE(ctypes.c_size_t)
+    d, c_char_p, fri = self.__dict__, ctypes.c_char_p, ctypes.CFUNCTYPE(cst)
     if vp_trampoline:
       fri = fri(vp_trampoline)
     for func_name, v in addr_map.iteritems():
