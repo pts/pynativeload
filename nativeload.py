@@ -57,8 +57,7 @@ class NativeExtDl(object):
   #   }
   #   return result;
   # }
-  _compar_code = '56578b74240c83caff833eff7506f7da8b742410833e00741a52b90a00000083ec2889e7adf3a5ffd089fc8946d8588366d4005f5ec390909090909090909090'.decode('hex')
-  assert not len(_compar_code) & 15  # Good for alignment.
+  _compar_code = '56578b74240c83caff833eff7506f7da8b742410833e00741a52b90a00000083ec2889e7adf3a5ffd089fc8946d8588366d4005f5ec3'.decode('hex')
 
   def __init__(self, native_code, addr_map):
     self._del_func, self._del_args = lambda: 0, ()  # Everything else is from addr_map.
