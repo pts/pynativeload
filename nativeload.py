@@ -217,37 +217,37 @@ class NativeExtCtypes(object):
       if mprotect(vp, len(native_code), mmap.PROT_READ | mmap.PROT_EXEC) == -1:
         raise RuntimeError('mprotect failed.')
     c_char_p = ctypes.c_char_p
-    d, c_char_p, func_ret_int = self.__dict__, ctypes.c_char_p, ctypes.CFUNCTYPE(ctypes.c_size_t)
-    trampoline_obj = vp_trampoline and func_ret_int(vp_trampoline)
+    d, c_char_p, fri = self.__dict__, ctypes.c_char_p, ctypes.CFUNCTYPE(ctypes.c_size_t)
+    if vp_trampoline:
+      fri = fri(vp_trampoline)
     for func_name, v in addr_map.iteritems():
-      d[func_name] = build_call(func_name, vp + v, imap, c_char_p, trampoline_obj, func_ret_int)
+      d[func_name] = build_call(func_name, vp + v, imap, c_char_p, fri)
 
   def __del__(self):
     self._del_func(*self._del_args)
 
   @staticmethod
-  def _build_call(func_name, vp_func, imap, c_char_p, trampoline_obj, func_ret_int):
-    func_obj = func_ret_int(vp_func)
-
+  def _build_call(func_name, vp_func, imap, c_char_p, fri):
     def ctypes_call(*args):
       # c_char_p can take int or str, good.
       return func_obj(*imap(c_char_p, args))
 
-    del trampoline_obj
+    func_obj = fri(vp_func)
     ctypes_call.__name__ = func_name
     return ctypes_call
 
   @staticmethod
-  def _build_call_win64(func_name, vp_func, imap, c_char_p, trampoline_obj, func_ret_int):
+  def _build_call_win64(func_name, vp_func, imap, c_char_p, fri):
     def ctypes_call(*args):
-      if len(args) > 10:
+      la = len(args)
+      if la > 10:
         raise ValueError('At most 10 arguments accepted.')
-      a = [0] * 11
-      for i in xrange(len(args)):
-        a[i] = c_char_p(args[i])  # c_char_p can take int or str, good.
-      a[10] = vp_func
-      return trampoline_obj(*a)
+      a = targs[:]
+      a[:la] = imap(c_char_p, args)
+      return fri(*a)  # Call _win64_trampoline_code on a.
 
+    targs = [0] * 11
+    targs[10] = vp_func
     ctypes_call.__name__ = func_name
     return ctypes_call
 
